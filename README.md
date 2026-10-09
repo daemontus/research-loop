@@ -115,10 +115,11 @@ has three panes:
 - **Goals** (right) — the researcher's `GOALS.md`, rendered from Markdown to
   HTML.
 
-The server binds to `127.0.0.1`. All `/api/*` endpoints (including the
-transcript stream and progress) require the session token, which the orchestrator
-includes in the URL it opens (`/?token=...`); it is not embedded in the served
-page.
+The server binds to `127.0.0.1` by default; pass `--host <ip>` (e.g. `0.0.0.0`)
+and/or `--port <n>` to change the bind address and port. All `/api/*` endpoints
+(including the transcript stream and progress) require the session token, which
+the orchestrator includes in the URL it opens (`/?token=...`); it is not embedded
+in the served page.
 
 ## Quick start
 
@@ -168,6 +169,7 @@ Open the printed UI URL to watch and to approve completion.
 | `--abort-timeout-ms` | 0 | per-attempt window before an in-flight turn is aborted and retried (`0` = disabled) |
 | `--phase-timeout-ms` | 0 | hard per-phase wall clock (`0` = disabled) |
 | `--thinking` | medium | reasoning effort |
+| `--host` | `127.0.0.1` | control-plane/WebUI bind address (`0.0.0.0` for all interfaces) |
 | `--port` | 0 | control-plane port (0 = random) |
 | `--run-dir` | `runs/<timestamp>` | output directory |
 | `--print-jobs` | off | print the container job JSON and exit |

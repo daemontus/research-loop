@@ -2,8 +2,9 @@
 /**
  * Control-plane HTTP server: broker endpoints, SSE transcript stream, WebUI.
  *
- * Binds to 127.0.0.1 only. Mutating endpoints require the session token
- * (x-session-token header or ?token=). The token is embedded in the served UI.
+ * Binds to 127.0.0.1 by default (configurable via opts.host). Mutating endpoints
+ * require the session token (x-session-token header or ?token=). The token is
+ * embedded in the served UI.
  */
 import fs from "node:fs";
 import http from "node:http";
@@ -108,6 +109,7 @@ class TranscriptTailer {
  * @param {string} opts.task
  * @param {string} opts.transcriptDir
  * @param {string} opts.sessionId
+ * @param {string} [opts.host]   bind address (default 127.0.0.1)
  * @param {number} [opts.port]
  * @param {number} [opts.maxHandoffs]
  * @param {number} [opts.wallclockMs]
@@ -300,14 +302,19 @@ export function startControlPlane(opts) {
 
   const port = opts.port || 0;
 
+  const host = opts.host || "127.0.0.1";
+  // A wildcard bind is not a browsable address; print/return a concrete one.
+  const urlHost = host === "0.0.0.0" || host === "::" || host === "[::]" ? "127.0.0.1" : host;
+
   return new Promise((resolve) => {
-    server.listen(port, "127.0.0.1", () => {
+    server.listen(port, host, () => {
       const actualPort = server.address().port;
-      const url = `http://127.0.0.1:${actualPort}/?token=${encodeURIComponent(opts.token)}`;
+      const url = `http://${urlHost}:${actualPort}/?token=${encodeURIComponent(opts.token)}`;
       broker.start();
       resolve({
         server,
         broker,
+        host,
         port: actualPort,
         url,
         tailer,

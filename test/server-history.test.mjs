@@ -98,4 +98,48 @@ describe("control-plane SSE history", () => {
     assert.ok(!html.includes("secret"));
     cp.close();
   });
+
+  it("binds to the requested host and reports it", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rl-host-"));
+    const transcriptDir = path.join(tmp, "transcripts");
+    fs.mkdirSync(transcriptDir, { recursive: true });
+    const cp = await startControlPlane({
+      token: "t",
+      task: "x",
+      transcriptDir,
+      sessionId: "s",
+      goalsPath: path.join(tmp, "GOALS.md"),
+      host: "127.0.0.1",
+      port: 0,
+    });
+    assert.equal(cp.host, "127.0.0.1");
+    assert.ok(
+      cp.url.startsWith(`http://127.0.0.1:${cp.port}/`),
+      `url should use the requested host, got ${cp.url}`,
+    );
+    cp.close();
+  });
+
+  it("uses a browsable host in the URL when bound to a wildcard", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rl-wildcard-"));
+    const transcriptDir = path.join(tmp, "transcripts");
+    fs.mkdirSync(transcriptDir, { recursive: true });
+    const cp = await startControlPlane({
+      token: "t",
+      task: "x",
+      transcriptDir,
+      sessionId: "s",
+      goalsPath: path.join(tmp, "GOALS.md"),
+      host: "0.0.0.0",
+      port: 0,
+    });
+    assert.equal(cp.host, "0.0.0.0");
+    assert.ok(
+      cp.url.startsWith(`http://127.0.0.1:${cp.port}/`),
+      `wildcard bind should print a browsable host, got ${cp.url}`,
+    );
+    // The UI is still reachable via loopback when bound to 0.0.0.0.
+    assert.equal((await fetch(`http://127.0.0.1:${cp.port}/api/state?token=t`)).status, 200);
+    cp.close();
+  });
 });

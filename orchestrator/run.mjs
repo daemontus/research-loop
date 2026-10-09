@@ -38,6 +38,7 @@ function parseArgs(argv) {
     config: path.join(REPO_ROOT, "pi_config.json"),
     image: "research-loop-agent:latest",
     runDir: null,
+    host: "127.0.0.1",
     port: 0,
     maxHandoffs: 200,
     wallclockMs: 0,
@@ -73,6 +74,7 @@ function parseArgs(argv) {
       case "--config": args.config = next(); break;
       case "--image": args.image = next(); break;
       case "--run-dir": args.runDir = next(); break;
+      case "--host": args.host = next(); break;
       case "--port": args.port = Number(next()); break;
       case "--max-handoffs": args.maxHandoffs = Number(next()); break;
       case "--wallclock-ms": args.wallclockMs = Number(next()); break;
@@ -108,6 +110,7 @@ function parseArgs(argv) {
             "  --researcher-max-tokens N      --advisor-max-tokens N",
             "  --max-handoffs N  --wallclock-ms N  --max-turns-per-phase N",
             "    (--max-handoffs caps researcher goal steps: proposals + results)",
+            "  --host <ip>  --port <n>  (WebUI bind address/port; defaults 127.0.0.1 / random)",
             "  --abort-timeout-ms N  --phase-timeout-ms N  (0 = disabled; default 0)",
             "Timeouts are disabled by default so long runs continue; set any to a",
             "positive value (ms) to enable, and monitor progress in the WebUI.",
@@ -134,6 +137,12 @@ function parseArgs(argv) {
 
 function timestampId() {
   return new Date().toISOString().replace(/[:.]/g, "-").replace(/Z$/, "");
+}
+
+/** Address local agent processes use to reach the control plane. */
+function localConnectHost(host) {
+  if (!host || host === "0.0.0.0" || host === "::" || host === "[::]") return "127.0.0.1";
+  return host;
 }
 
 let fauxCallSeq = 0;
@@ -368,6 +377,7 @@ async function main() {
     transcriptDir,
     sessionId,
     goalsPath,
+    host: args.host,
     port: args.port,
     maxHandoffs: args.maxHandoffs,
     initialNote,
@@ -399,12 +409,14 @@ async function main() {
     phaseTimeoutMs: args.phaseTimeoutMs,
   };
 
+  const localBrokerUrl = `http://${localConnectHost(args.host)}:${control.port}`;
+
   const jobs = {
     researcher: {
       ...commonJob,
       role: "researcher",
       model: args.researcherModel,
-      brokerUrl: args.local ? `http://127.0.0.1:${control.port}` : "http://host.docker.internal:8088",
+      brokerUrl: args.local ? localBrokerUrl : "http://host.docker.internal:8088",
       sandbox: args.local ? researcherSandbox : "/sandbox",
       configDir: args.local ? path.join(REPO_ROOT, "config", "researcher") : "/config",
       transcriptPath: args.local
@@ -418,7 +430,7 @@ async function main() {
       ...commonJob,
       role: "advisor",
       model: args.advisorModel,
-      brokerUrl: args.local ? `http://127.0.0.1:${control.port}` : "http://host.docker.internal:8088",
+      brokerUrl: args.local ? localBrokerUrl : "http://host.docker.internal:8088",
       sandbox: args.local ? advisorSandbox : "/sandbox",
       configDir: args.local ? path.join(REPO_ROOT, "config", "advisor") : "/config",
       transcriptPath: args.local
