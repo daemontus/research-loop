@@ -121,6 +121,34 @@ function providerModelsList(providerDef) {
 }
 
 /**
+ * True when the model has no positive output-token cap configured. We treat
+ * absence, 0 and negative sentinels (e.g. "-1") as "unlimited".
+ */
+export function hasUnlimitedMaxTokens(model) {
+  return !(Number(model?.maxTokens) > 0);
+}
+
+/**
+ * Wrap an `onPayload` hook so it strips any response-token cap from the
+ * request. pi-ai's `clampMaxTokensToContext` turns a model `maxTokens` of 0
+ * into `max_tokens: 1` whenever the context window is unknown, so with an
+ * "unlimited" model we must delete the field to let the provider decide.
+ *
+ * @param {((params: object, model: object) => unknown) | undefined} [existing]
+ */
+export function stripMaxTokensOnPayload(existing) {
+  return async (params, model) => {
+    const next = existing ? await existing(params, model) : params;
+    const target = next === undefined ? params : next;
+    if (target && typeof target === "object") {
+      delete target.max_tokens;
+      delete target.max_completion_tokens;
+    }
+    return target;
+  };
+}
+
+/**
  * Build the Models registry.
  *
  * Credentials are assembled *before* `builtinModels()` is called, because the

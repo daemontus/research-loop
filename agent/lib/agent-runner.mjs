@@ -25,6 +25,7 @@ import {
   lastAssistantReasoning,
   lastAssistantStopReason,
 } from "./context-compaction.mjs";
+import { hasUnlimitedMaxTokens, stripMaxTokensOnPayload } from "./model-providers.mjs";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -130,6 +131,11 @@ export class AgentSession {
         const merged = { ...options };
         if (merged.maxRetries === undefined) merged.maxRetries = session.maxProviderRetries;
         if (merged.maxRetryDelayMs === undefined) merged.maxRetryDelayMs = session.maxRetryDelayMs;
+        // With an "unlimited" model, pi-ai would force max_tokens=1 when the
+        // context window is unknown; drop the cap so the provider decides.
+        if (hasUnlimitedMaxTokens(model)) {
+          merged.onPayload = stripMaxTokensOnPayload(merged.onPayload);
+        }
         return session.models.streamSimple(model, context, merged);
       },
       toolExecution: "sequential",
