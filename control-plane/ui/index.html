@@ -1,0 +1,737 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>research-loop transcript</title>
+    <style>
+      :root {
+        --bg: #0e1116;
+        --panel: #161b22;
+        --panel2: #1c2230;
+        --border: #2a3140;
+        --text: #d7dce4;
+        --muted: #8b95a7;
+        --researcher: #4f9cf9;
+        --advisor: #f5a623;
+        --human: #a06cf7;
+        --control: #6b7280;
+        --ok: #3fb950;
+        --warn: #d29922;
+        --err: #f85149;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        padding: 10px 16px;
+        background: var(--panel);
+        border-bottom: 1px solid var(--border);
+        flex-wrap: wrap;
+      }
+      header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+      .stat { font-size: 12px; color: var(--muted); }
+      .stat b { color: var(--text); font-weight: 600; }
+      .badge {
+        padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700;
+        text-transform: uppercase; letter-spacing: .04em;
+      }
+      .state { background: var(--panel2); color: var(--text); border: 1px solid var(--border); }
+      .state.AWAITING_HUMAN { background: #3a2e00; color: #ffd479; border-color: #6b5200; }
+      .state.DONE { background: #10331b; color: #7ee2a8; border-color: #1c5a30; }
+      .state.ABORTED { background: #3a1414; color: #ff9a92; border-color: #6b1f1f; }
+      main { flex: 1; display: flex; min-height: 0; }
+      #timeline-wrap { flex: 1; position: relative; min-height: 0; display: flex; }
+      #timeline { flex: 1; overflow-y: auto; padding: 16px; position: relative; }
+      .latest {
+        position: absolute; bottom: 16px; right: 16px; display: inline-flex;
+        align-items: center; gap: 4px; padding: 6px 12px; border-radius: 999px;
+        background: #1f6feb; border: 1px solid #1f6feb; color: #fff; font-size: 12px;
+        cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,.4);
+      }
+      .latest[hidden] { display: none !important; }
+      aside {
+        width: 380px; border-left: 1px solid var(--border); background: var(--panel);
+        display: flex; flex-direction: column; min-height: 0;
+      }
+      aside .side-head { padding: 10px 14px; border-bottom: 1px solid var(--border); font-weight: 600; }
+      #overview-wrap {
+        width: 300px; border-left: 1px solid var(--border); background: var(--panel);
+        display: flex; flex-direction: column; min-height: 0;
+      }
+      #overview-wrap .side-head { padding: 10px 14px; border-bottom: 1px solid var(--border); font-weight: 600; }
+      #overview { flex: 1; overflow-y: auto; padding: 8px; }
+      .ov-item {
+        display: block; width: 100%; text-align: left; margin: 0 0 4px; padding: 6px 8px;
+        background: var(--panel2); border: 1px solid var(--border); border-left-width: 3px;
+        border-radius: 6px; color: var(--text); cursor: pointer; font: inherit;
+      }
+      .ov-item:hover { border-color: #3d4757; }
+      .ov-item.active { background: #202a3d; border-color: #3d4757; }
+      .ov-item.researcher { border-left-color: var(--researcher); }
+      .ov-item.advisor { border-left-color: var(--advisor); }
+      .ov-item.human { border-left-color: var(--human); }
+      .ov-item.control { border-left-color: var(--control); }
+      .ov-item .ov-top { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
+      .ov-item .ov-who { font-weight: 700; }
+      .ov-item .ov-who.researcher { color: var(--researcher); }
+      .ov-item .ov-who.advisor { color: var(--advisor); }
+      .ov-item .ov-who.human { color: var(--human); }
+      .ov-item .ov-who.control { color: var(--control); }
+      .ov-item .ov-label { display: block; font-size: 12px; margin-top: 2px; }
+      .ov-item .ov-goal { color: var(--muted); }
+      .entry.flash .bubble { outline: 2px solid #f5a623; outline-offset: 1px; }
+      #goals { flex: 1; overflow-y: auto; padding: 12px 14px; font-size: 13px; line-height: 1.55; color: var(--text); }
+      #goals .muted-note { color: var(--muted); font: 12px/1.5 var(--mono); }
+      #goals h1 { font-size: 16px; margin: 4px 0 8px; }
+      #goals h2 { font-size: 14px; margin: 14px 0 6px; border-bottom: 1px solid var(--border); padding-bottom: 3px; }
+      #goals h3 { font-size: 13px; margin: 12px 0 4px; }
+      #goals h4, #goals h5, #goals h6 { font-size: 12px; margin: 10px 0 4px; color: var(--muted); }
+      #goals p { margin: 6px 0; }
+      #goals ul, #goals ol { margin: 4px 0 8px; padding-left: 20px; }
+      #goals li { margin: 2px 0; }
+      #goals li.d1 { margin-left: 16px; }
+      #goals li.d2 { margin-left: 32px; }
+      #goals li.d3 { margin-left: 48px; }
+      #goals code { background: #10141b; border-radius: 4px; padding: 1px 4px; font: 12px var(--mono); color: #ffd479; }
+      #goals pre { background: #10141b; border-radius: 6px; padding: 8px; overflow-x: auto; }
+      #goals pre code { background: none; padding: 0; }
+      #goals a { color: var(--researcher); }
+      #goals blockquote { margin: 6px 0; padding: 2px 10px; border-left: 3px solid var(--border); color: var(--muted); }
+      #goals hr { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
+      .entry { margin: 0 0 12px; }
+      .entry .meta { font-size: 11px; color: var(--muted); margin-bottom: 4px; display: flex; gap: 8px; align-items: center; }
+      .entry .meta .who { font-weight: 700; }
+      .who.researcher { color: var(--researcher); }
+      .who.advisor { color: var(--advisor); }
+      .who.human { color: var(--human); }
+      .who.control { color: var(--control); }
+      .bubble {
+        background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+        padding: 8px 10px; white-space: pre-wrap; word-break: break-word;
+      }
+      .entry.researcher .bubble { border-left: 3px solid var(--researcher); }
+      .entry.advisor .bubble { border-left: 3px solid var(--advisor); }
+      .entry.human .bubble { border-left: 3px solid var(--human); }
+      .entry.control .bubble { border-left: 3px solid var(--control); }
+      .entry.handoff .bubble { background: var(--panel2); font-family: var(--mono); font-size: 12px; }
+      .entry.tool .bubble { background: #10141b; font-family: var(--mono); font-size: 12px; color: #a7b1c2; }
+      .entry .role { font-size: 11px; color: var(--muted); }
+      details { margin-top: 6px; }
+      summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+      pre { margin: 6px 0 0; white-space: pre-wrap; word-break: break-word; font-family: var(--mono); font-size: 12px; }
+      .clamp { max-height: 7.6em; overflow: hidden; }
+      .clamp.expanded { max-height: none; }
+      .more { display: block; margin-top: 6px; font-size: 11px; color: var(--muted); background: none; border: none; padding: 0; cursor: pointer; }
+      .more:hover { color: var(--text); }
+      .more[hidden] { display: none !important; }
+      .field { margin-top: 8px; }
+      .field .k { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin-bottom: 2px; }
+      .field ul { margin: 2px 0 0; padding-left: 18px; }
+      .field li { margin: 2px 0; }
+      .field .v { white-space: pre-wrap; }
+      .kv { margin-top: 6px; font-size: 12px; }
+      .kv .k { color: var(--muted); margin-right: 6px; }
+      .nested { margin-top: 6px; }
+      .toolcall { color: #79c0ff; }
+      .err { color: var(--err); }
+      .ok { color: var(--ok); }
+      .composer { display: flex; gap: 6px; padding: 10px 14px; border-top: 1px solid var(--border); }
+      .composer textarea { flex: 1; background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+        border-radius: 6px; padding: 6px 8px; resize: vertical; min-height: 38px; font: inherit; }
+      .composer select { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; }
+      button { background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+        border-radius: 6px; padding: 6px 12px; cursor: pointer; font: inherit; }
+      button:hover { border-color: #3d4757; }
+      button.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+      button.danger { background: #6b1f1f; border-color: #6b1f1f; color: #fff; }
+      #approval { display: none; padding: 10px 14px; border-top: 1px solid var(--border); background: #2a2200; }
+      #approval.visible { display: block; }
+      #approval textarea { width: 100%; background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+        border-radius: 6px; padding: 6px; margin: 6px 0; font: inherit; }
+      .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+      .filters label { font-size: 12px; color: var(--muted); margin-right: 10px; cursor: pointer; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>research-loop</h1>
+      <span id="state" class="badge state">…</span>
+      <span class="stat">goal <b id="goal">-</b></span>
+      <span class="stat">handoffs <b id="handoffs">0</b></span>
+      <span class="stat">researcher <b id="reg-researcher">offline</b></span>
+      <span class="stat">advisor <b id="reg-advisor">offline</b></span>
+      <span class="filters" style="margin-left:auto">
+        <label><input type="checkbox" data-filter="researcher" checked /> researcher</label>
+        <label><input type="checkbox" data-filter="advisor" checked /> advisor</label>
+        <label><input type="checkbox" data-filter="human" checked /> human</label>
+        <label><input type="checkbox" data-filter="control" checked /> control</label>
+      </span>
+    </header>
+    <main>
+      <div id="timeline-wrap">
+        <div id="timeline"></div>
+        <button id="latest" class="latest" type="button" hidden>↓ latest</button>
+      </div>
+      <section id="overview-wrap">
+        <div class="side-head">Overview</div>
+        <div id="overview"></div>
+      </section>
+      <aside>
+        <div class="side-head">Goals</div>
+        <div id="goals"><div class="muted-note">(not yet written)</div></div>
+        <div id="approval">
+          <div class="row"><b>Task completion requires your approval.</b></div>
+          <textarea id="approval-note" placeholder="Optional note to the agents…"></textarea>
+          <div class="row">
+            <button class="primary" onclick="humanDecision('approve')">Approve completion</button>
+            <button onclick="humanDecision('extend')">Extend budget</button>
+            <button class="danger" onclick="humanDecision('reject')">Reject / keep working</button>
+          </div>
+        </div>
+        <div class="composer">
+          <select id="target">
+            <option value="researcher">researcher</option>
+            <option value="advisor">advisor</option>
+          </select>
+          <textarea id="human-text" placeholder="Inject a message (any time)…"></textarea>
+          <button onclick="sendHumanMessage()">Send</button>
+        </div>
+      </aside>
+    </main>
+
+    <script>
+      const TOKEN = new URLSearchParams(location.search).get("token") || "";
+      const timeline = document.getElementById("timeline");
+      const latestBtn = document.getElementById("latest");
+      const overview = document.getElementById("overview");
+      const filters = { researcher: true, advisor: true, human: true, control: true };
+      let overviewItems = [];
+
+      function atBottom() {
+        return timeline.scrollTop + timeline.clientHeight >= timeline.scrollHeight - 60;
+      }
+      function scrollToBottom() {
+        timeline.scrollTop = timeline.scrollHeight;
+        latestBtn.hidden = true;
+      }
+      let scrollScheduled = false;
+      timeline.addEventListener("scroll", () => {
+        latestBtn.hidden = atBottom();
+        if (!scrollScheduled) {
+          scrollScheduled = true;
+          requestAnimationFrame(() => {
+            scrollScheduled = false;
+            updateActiveOverview();
+          });
+        }
+      });
+      latestBtn.addEventListener("click", scrollToBottom);
+
+      document.querySelectorAll("[data-filter]").forEach((cb) =>
+        cb.addEventListener("change", () => {
+          filters[cb.dataset.filter] = cb.checked;
+          applyFilters();
+        }),
+      );
+
+      function applyFilters() {
+        for (const el of timeline.querySelectorAll(".entry")) {
+          const who = el.dataset.who || "control";
+          el.style.display = filters[who] === false ? "none" : "";
+        }
+      }
+
+      function esc(s) {
+        return String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+      }
+
+      function fmtTime(ts) {
+        try { return new Date(ts).toLocaleTimeString(); } catch { return ""; }
+      }
+
+      function list(items) {
+        return `<ul>${items
+          .map((x) => `<li>${esc(typeof x === "string" ? x : JSON.stringify(x))}</li>`)
+          .join("")}</ul>`;
+      }
+
+      function renderPayload(payload) {
+        if (!payload || typeof payload !== "object") return "";
+        const parts = [];
+        const handled = new Set();
+        for (const [k, label] of [
+          ["title", "Title"],
+          ["summary", "Summary"],
+          ["feedback", "Feedback"],
+          ["rationale", "Rationale"],
+        ]) {
+          if (typeof payload[k] === "string" && payload[k].trim()) {
+            parts.push(`<div class="field"><span class="k">${label}</span><div class="v">${esc(payload[k])}</div></div>`);
+            handled.add(k);
+          }
+        }
+        for (const [k, label] of [
+          ["plan", "Plan"],
+          ["acceptanceCriteria", "Acceptance criteria"],
+          ["requiredChanges", "Required changes"],
+          ["artifacts", "Artifacts"],
+          ["verification", "Verification"],
+          ["deliverables", "Deliverables"],
+          ["conditions", "Conditions"],
+          ["blockers", "Blockers"],
+          ["caveats", "Caveats"],
+          ["unfinished", "Unfinished"],
+        ]) {
+          if (Array.isArray(payload[k]) && payload[k].length) {
+            parts.push(`<div class="field"><span class="k">${label}</span>${list(payload[k])}</div>`);
+            handled.add(k);
+          }
+        }
+        if (Array.isArray(payload.subgoals) && payload.subgoals.length) {
+          parts.push(
+            `<div class="field"><span class="k">Subgoals</span>${list(
+              payload.subgoals.map((s) => `${s.goalId || "?"} — ${s.title || ""}`),
+            )}</div>`,
+          );
+          handled.add("subgoals");
+        }
+        const rest = Object.entries(payload).filter(
+          ([k, v]) => !handled.has(k) && v !== undefined && v !== null && v !== "",
+        );
+        const scalars = rest.filter(([, v]) => typeof v !== "object");
+        const objects = rest.filter(([, v]) => typeof v === "object");
+        if (scalars.length) {
+          parts.push(
+            `<div class="kv">${scalars
+              .map(([k, v]) => `<span class="k">${esc(k)}</span>${esc(String(v))}`)
+              .join(" · ")}</div>`,
+          );
+        }
+        if (objects.length) {
+          parts.push(`<pre>${esc(JSON.stringify(Object.fromEntries(objects), null, 2))}</pre>`);
+        }
+        return parts.join("");
+      }
+
+      function metaHtml(who, entry, extra = "") {
+        return `<div class="meta"><span class="who ${who}">${who}</span>${extra}<span>${fmtTime(entry.ts)}</span></div>`;
+      }
+
+      function bubble(inner) {
+        return `<div class="bubble"><div class="clamp">${inner}</div><button class="more" type="button" hidden>Show more</button></div>`;
+      }
+
+      function finalizeClamp(div) {
+        const clamp = div.querySelector(".clamp");
+        const more = div.querySelector(".more");
+        if (!clamp || !more) return;
+
+        const setExpanded = (expanded) => {
+          clamp.classList.toggle("expanded", expanded);
+          more.textContent = expanded ? "Show less" : "Show more";
+        };
+        // Measure overflow in the collapsed state, regardless of nested
+        // <details> being open.
+        const overflows = () => {
+          const wasExpanded = clamp.classList.contains("expanded");
+          if (wasExpanded) clamp.classList.remove("expanded");
+          const result = clamp.scrollHeight > clamp.clientHeight + 4;
+          if (wasExpanded) clamp.classList.add("expanded");
+          return result;
+        };
+
+        // Expanding a nested <details> (e.g. reasoning) must reveal the whole
+        // cell; otherwise the clamp's max-height/overflow keeps it cut off.
+        for (const d of clamp.querySelectorAll("details")) {
+          d.addEventListener("toggle", () => {
+            if (d.open) {
+              setExpanded(true);
+            } else if (!clamp.querySelector("details[open]") && !overflows()) {
+              setExpanded(false);
+            }
+          });
+        }
+
+        if (overflows()) {
+          more.hidden = false;
+          more.addEventListener("click", () => {
+            setExpanded(!clamp.classList.contains("expanded"));
+          });
+        } else {
+          more.hidden = true;
+        }
+      }
+
+      // --- minimal, HTML-escaping markdown renderer for GOALS.md -------------
+      function inlineMd(s) {
+        return s
+          .replace(/`([^`]+)`/g, (_, c) => `<code>${c}</code>`)
+          .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+          .replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>")
+          .replace(
+            /\[([^\]]+)\]\((https?:[^)\s]+)\)/g,
+            '<a href="$2" target="_blank" rel="noreferrer">$1</a>',
+          );
+      }
+
+      function mdToHtml(md) {
+        const lines = String(md || "").replace(/\r\n?/g, "\n").split("\n");
+        const out = [];
+        let i = 0;
+        let list = null;
+        const para = [];
+        const flushPara = () => {
+          if (para.length) {
+            out.push(`<p>${inlineMd(esc(para.join(" ")))}</p>`);
+            para.length = 0;
+          }
+        };
+        const flushList = () => {
+          if (!list) return;
+          const tag = list.type;
+          out.push(
+            `<${tag}>${list.items
+              .map((it) => `<li class="d${it.depth}">${it.html}</li>`)
+              .join("")}</${tag}>`,
+          );
+          list = null;
+        };
+        while (i < lines.length) {
+          const line = lines[i];
+          if (/^\s*(```+|~~~+)/.test(line)) {
+            flushPara();
+            flushList();
+            const marker = line.match(/^\s*(```+|~~~+)/)[1][0];
+            const closeRe = new RegExp("^\\s*" + marker + "{3,}\\s*$");
+            const buf = [];
+            i += 1;
+            while (i < lines.length && !closeRe.test(lines[i])) {
+              buf.push(lines[i]);
+              i += 1;
+            }
+            i += 1;
+            out.push(`<pre><code>${esc(buf.join("\n"))}</code></pre>`);
+            continue;
+          }
+          if (/^\s*$/.test(line)) {
+            flushPara();
+            flushList();
+            i += 1;
+            continue;
+          }
+          const h = line.match(/^(#{1,6})\s+(.*)$/);
+          if (h) {
+            flushPara();
+            flushList();
+            const lvl = h[1].length;
+            out.push(`<h${lvl}>${inlineMd(esc(h[2].trim()))}</h${lvl}>`);
+            i += 1;
+            continue;
+          }
+          if (/^\s*([-*_])\1{2,}\s*$/.test(line)) {
+            flushPara();
+            flushList();
+            out.push("<hr>");
+            i += 1;
+            continue;
+          }
+          const bq = line.match(/^\s*>\s?(.*)$/);
+          if (bq) {
+            flushPara();
+            flushList();
+            out.push(`<blockquote>${inlineMd(esc(bq[1]))}</blockquote>`);
+            i += 1;
+            continue;
+          }
+          const li = line.match(/^(\s*)([-*+]|\d+[.)])\s+(.*)$/);
+          if (li) {
+            flushPara();
+            const depth = Math.min(3, Math.floor(li[1].replace(/\t/g, "  ").length / 2));
+            const type = /\d/.test(li[2]) ? "ol" : "ul";
+            if (!list || list.type !== type) {
+              flushList();
+              list = { type, items: [] };
+            }
+            list.items.push({ depth, html: inlineMd(esc(li[3].trim())) });
+            i += 1;
+            continue;
+          }
+          flushList();
+          para.push(line.trim());
+          i += 1;
+        }
+        flushPara();
+        flushList();
+        return out.join("\n");
+      }
+
+      // --- compact overview of high-level phases ----------------------------
+      const HANDOFF_LABELS = {
+        skills_proposal: "proposed skills",
+        skills_ready: "installed skills",
+        skills_approved: "approved skills",
+        skills_changes: "requested skill changes",
+        proposal: "proposed a plan",
+        result: "submitted a result",
+        task_request: "requested task completion",
+        plan_approved: "approved the plan",
+        plan_changes: "requested plan changes",
+        result_accepted: "accepted result (goal met)",
+        result_changes: "requested result changes",
+        task_accepted: "accepted task completion",
+        task_changes: "requested task changes",
+      };
+
+      function addOverview(entry, target) {
+        let who = entry.agent || "control";
+        let label = null;
+        const goalId = entry.goalId || null;
+        if (entry.kind === "handoff" && entry.direction === "out") {
+          label = HANDOFF_LABELS[entry.handoffKind] || entry.handoffKind || "handoff";
+        } else if (entry.kind === "start") {
+          who = "control";
+          label = "session started";
+        } else if (entry.kind === "human_message") {
+          who = "human";
+          label = "human message";
+        } else if (entry.kind === "human_decision") {
+          who = "human";
+          label = `human: ${entry.action || "decision"}`;
+        } else if (entry.kind === "terminal") {
+          who = "control";
+          label = `finished: ${entry.reason || ""}`;
+        } else if (entry.kind === "abort") {
+          who = "control";
+          label = `aborted: ${entry.reason || ""}`;
+        }
+        if (label === null) return;
+
+        const el = document.createElement("button");
+        el.type = "button";
+        el.className = `ov-item ${who}`;
+        el.innerHTML =
+          `<div class="ov-top"><span class="ov-who ${who}">${esc(who)}</span><span>${fmtTime(entry.ts)}</span></div>` +
+          `<span class="ov-label">${esc(label)}${goalId ? ` <span class="ov-goal">${esc(goalId)}</span>` : ""}</span>`;
+        el.addEventListener("click", () => {
+          target.scrollIntoView({ behavior: "smooth", block: "start" });
+          target.classList.add("flash");
+          setTimeout(() => target.classList.remove("flash"), 1200);
+        });
+        overview.appendChild(el);
+        overviewItems.push({ el, target });
+      }
+
+      function updateActiveOverview() {
+        const top = timeline.scrollTop + 40;
+        let active = null;
+        for (const item of overviewItems) {
+          if (item.target.offsetTop <= top) active = item;
+          else break;
+        }
+        for (const item of overviewItems) item.el.classList.toggle("active", item === active);
+        if (active) {
+          const r = active.el.getBoundingClientRect();
+          const c = overview.getBoundingClientRect();
+          if (r.top < c.top || r.bottom > c.bottom) {
+            active.el.scrollIntoView({ block: "nearest" });
+          }
+        }
+      }
+
+      function addEntry(entry, scroll = true) {
+        // Agents already record their own inbound/outbound handoffs; the
+        // control-plane duplicates would render twice, so skip them here.
+        // (They remain in session.jsonl for audit.)
+        if (entry.agent === "control" && (entry.kind === "deliver" || entry.kind === "handoff")) {
+          return;
+        }
+        // Show each handoff once, from the sender. The receiver's inbound copy
+        // and the prompt it received are the same data rendered again.
+        if (entry.kind === "handoff" && entry.direction === "in") return;
+        if (
+          entry.kind === "message" &&
+          entry.role === "user" &&
+          typeof entry.content === "string" &&
+          entry.content.startsWith("[handoff from ")
+        ) {
+          return;
+        }
+        // Control-tool acknowledgements ("Handoff recorded ...") are
+        // bookkeeping, not conversation.
+        if (
+          entry.kind === "message" &&
+          entry.role === "toolResult" &&
+          typeof entry.content === "string" &&
+          entry.content.startsWith("Handoff recorded")
+        ) {
+          return;
+        }
+
+        const who = entry.agent === "control" ? "control" : entry.agent || "control";
+        const div = document.createElement("div");
+        div.className = `entry ${who}`;
+        div.dataset.who = who;
+
+        if (entry.kind === "message") {
+          const role = entry.role || "?";
+          let inner = "";
+          if (role === "toolResult") {
+            div.classList.add("tool");
+            const status = entry.isError
+              ? '<span class="err">error</span>'
+              : '<span class="ok">ok</span>';
+            inner = `<div class="role">tool ${esc(entry.toolName || "")} ${status}</div>`;
+            if (entry.content && entry.content.trim()) {
+              inner += `<div class="v">${esc(entry.content)}</div>`;
+            }
+          } else {
+            if (entry.content && entry.content.trim()) {
+              inner += `<div class="v">${esc(entry.content)}</div>`;
+            }
+            if (entry.tool_calls && entry.tool_calls.length) {
+              inner += entry.tool_calls
+                .map(
+                  (t) =>
+                    `<details class="nested"><summary class="toolcall">tool call: ${esc(t.name)}</summary><pre>${esc(JSON.stringify(t.arguments, null, 2))}</pre></details>`,
+                )
+                .join("");
+            }
+            if (entry.reasoning) {
+              inner += `<details class="nested"><summary>reasoning</summary><pre>${esc(entry.reasoning)}</pre></details>`;
+            }
+            if (entry.errorMessage) inner += `<div class="err">${esc(entry.errorMessage)}</div>`;
+          }
+          div.innerHTML =
+            metaHtml(who, entry, `<span>${role}</span>${entry.stopReason ? `<span>${esc(entry.stopReason)}</span>` : ""}`) +
+            bubble(inner);
+        } else if (entry.kind === "handoff") {
+          const hk = entry.handoffKind || "handoff";
+          const dir = entry.direction === "out" ? "→" : "←";
+          const label = `${dir} ${hk}${entry.goalId ? " · " + entry.goalId : ""}`;
+          let inner = entry.text && entry.text.trim() ? `<div class="v">${esc(entry.text)}</div>` : "";
+          inner += renderPayload(entry.payload);
+          div.classList.add("handoff");
+          div.innerHTML = metaHtml(who, entry, `<span>${esc(label)}</span>`) + bubble(inner);
+        } else if (entry.kind === "human_message" || entry.kind === "human_decision") {
+          const label = `${esc(entry.kind)}${entry.to ? " → " + esc(entry.to) : ""}`;
+          const text = entry.text && entry.text.trim() ? `<div class="v">${esc(entry.text)}</div>` : "";
+          div.innerHTML = metaHtml("human", entry, `<span>${label}</span>`) + bubble(text);
+        } else if (
+          ["state", "start", "reject", "terminal", "closed", "abort"].includes(entry.kind)
+        ) {
+          const detail = entry.text || entry.reason || entry.error || "";
+          const body = detail ? `<div class="v">${esc(detail)}</div>` : "";
+          div.innerHTML =
+            metaHtml("control", entry, `<span>${esc(entry.kind)}</span>`) + bubble(body);
+        } else {
+          const summary = entry.content || entry.text || entry.reason || entry.error || "";
+          const kindTag = entry.kind ? `<span>${esc(entry.kind)}</span>` : `<span>system</span>`;
+          const body = summary ? `<div class="v">${esc(summary)}</div>` : "";
+          div.innerHTML = metaHtml(who, entry, kindTag) + bubble(body);
+        }
+
+        const stick = scroll && atBottom();
+        timeline.appendChild(div);
+        finalizeClamp(div);
+        addOverview(entry, div);
+        applyFilters();
+        if (stick) scrollToBottom();
+        else latestBtn.hidden = atBottom();
+      }
+
+      function updateState(state) {
+        document.getElementById("state").textContent = state.state || "?";
+        document.getElementById("state").className = "badge state " + (state.state || "");
+        document.getElementById("goal").textContent = state.currentGoalId || "-";
+        document.getElementById("handoffs").textContent = state.handoffs ?? 0;
+        document.getElementById("reg-researcher").textContent = state.registered?.researcher ? "online" : "offline";
+        document.getElementById("reg-advisor").textContent = state.registered?.advisor ? "online" : "offline";
+        document.getElementById("approval").classList.toggle("visible", state.state === "AWAITING_HUMAN");
+      }
+
+      let lastGoalsRaw = null;
+      function refreshGoals() {
+        fetch("/api/goals?token=" + encodeURIComponent(TOKEN))
+          .then((r) => r.json())
+          .then((d) => {
+            const raw = d.goals || "";
+            if (raw === lastGoalsRaw) return;
+            lastGoalsRaw = raw;
+            const el = document.getElementById("goals");
+            if (!raw.trim()) {
+              el.innerHTML = '<div class="muted-note">(not yet written)</div>';
+              return;
+            }
+            el.innerHTML = mdToHtml(raw);
+          })
+          .catch(() => {});
+      }
+      refreshGoals();
+      setInterval(refreshGoals, 3000);
+
+      const es = new EventSource("/api/stream?token=" + encodeURIComponent(TOKEN));
+      es.onmessage = (ev) => {
+        const msg = JSON.parse(ev.data);
+        if (msg.type === "state") {
+          updateState(msg.state);
+        } else if (msg.type === "history") {
+          // Full transcript replay on (re)connect — replace rather than append
+          // so a reconnect cannot duplicate entries.
+          timeline.innerHTML = "";
+          overview.innerHTML = "";
+          overviewItems = [];
+          for (const entry of msg.entries || []) addEntry(entry, false);
+          scrollToBottom();
+          updateActiveOverview();
+        } else if (msg.type === "entry") {
+          addEntry(msg.entry, true);
+        }
+      };
+      es.onerror = () => {
+        // EventSource auto-reconnects; the server replays full history on each connect.
+      };
+
+      async function humanDecision(action) {
+        const note = document.getElementById("approval-note").value;
+        await fetch("/api/human/decision?token=" + encodeURIComponent(TOKEN), {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ action, text: note || undefined }),
+        });
+      }
+
+      async function sendHumanMessage() {
+        const text = document.getElementById("human-text").value;
+        const target = document.getElementById("target").value;
+        if (!text.trim()) return;
+        const r = await fetch("/api/human/message?token=" + encodeURIComponent(TOKEN), {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ target, text }),
+        });
+        if (!r.ok) {
+          const e = await r.json().catch(() => ({}));
+          alert(e.error || "could not deliver message");
+          return;
+        }
+        const body = await r.json();
+        if (body.deferred) {
+          alert(`Held until the ${body.deferredUntil} is expected to act next.`);
+        }
+        document.getElementById("human-text").value = "";
+      }
+    </script>
+  </body>
+</html>
