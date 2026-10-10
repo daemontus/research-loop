@@ -120,9 +120,16 @@ async function main() {
   const transcript = createTranscriptWriter(transcriptPath, role);
 
   const supportsImage = modelSupportsImages(model);
+  const skipSkills = Boolean(job.skipSkills);
   const systemPrompt =
     role === "researcher"
-      ? buildResearcherPrompt({ sandbox, configDir, supportsImage, task: job.task || "" })
+      ? buildResearcherPrompt({
+          sandbox,
+          configDir,
+          supportsImage,
+          task: job.task || "",
+          skipSkills,
+        })
       : buildAdvisorPrompt({ sandbox, configDir, supportsImage, task: job.task || "" });
 
   const controlState = { pendingHandoff: null };

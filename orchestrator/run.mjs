@@ -18,6 +18,11 @@ import { fileURLToPath } from "node:url";
 
 import { startControlPlane } from "../control-plane/server.mjs";
 import {
+  expectedRoleForState,
+  replaySessionLog,
+} from "../control-plane/broker.mjs";
+import { STATES } from "../control-plane/state-machine.mjs";
+import {
   discoverModelLimits,
   providerForDocker,
   resolveCredentials,
@@ -31,13 +36,19 @@ const REPO_ROOT = path.resolve(__dirname, "..");
 function parseArgs(argv) {
   const args = {
     task: "",
+    taskSet: false,
     taskFile: null,
     initialSandbox: null,
     researcherModel: "einfra:qwen3.8-27b",
+    researcherModelSet: false,
     advisorModel: "einfra:deepseek-v4-flash",
+    advisorModelSet: false,
     config: path.join(REPO_ROOT, "pi_config.json"),
     image: "research-loop-agent:latest",
     runDir: null,
+    resume: null,
+    resumePrompt: null,
+    view: null,
     host: "127.0.0.1",
     port: 0,
     maxHandoffs: 200,
@@ -66,14 +77,17 @@ function parseArgs(argv) {
     const a = argv[i];
     const next = () => argv[++i];
     switch (a) {
-      case "--task": args.task = next(); break;
+      case "--task": args.task = next(); args.taskSet = true; break;
       case "--task-file": args.taskFile = next(); break;
       case "--initial-sandbox": args.initialSandbox = next(); break;
-      case "--researcher-model": args.researcherModel = next(); break;
-      case "--advisor-model": args.advisorModel = next(); break;
+      case "--researcher-model": args.researcherModel = next(); args.researcherModelSet = true; break;
+      case "--advisor-model": args.advisorModel = next(); args.advisorModelSet = true; break;
       case "--config": args.config = next(); break;
       case "--image": args.image = next(); break;
       case "--run-dir": args.runDir = next(); break;
+      case "--resume": args.resume = next(); break;
+      case "--resume-prompt": args.resumePrompt = next(); break;
+      case "--view": args.view = next(); break;
       case "--host": args.host = next(); break;
       case "--port": args.port = Number(next()); break;
       case "--max-handoffs": args.maxHandoffs = Number(next()); break;
@@ -105,13 +119,17 @@ function parseArgs(argv) {
             "  --researcher-model p:m   --advisor-model p:m",
             "  --initial-sandbox <dir>  --config <pi_config.json>",
             "  --local | --docker | --faux",
-            "  --no-open                --no-model-discovery  --skip-skills",
+            "  --no-open  --no-model-discovery  --skip-skills",
             "  --researcher-context-window N  --advisor-context-window N",
             "  --researcher-max-tokens N      --advisor-max-tokens N",
             "  --max-handoffs N  --wallclock-ms N  --max-turns-per-phase N",
             "    (--max-handoffs caps researcher goal steps: proposals + results)",
             "  --host <ip>  --port <n>  (WebUI bind address/port; defaults 127.0.0.1 / random)",
             "  --abort-timeout-ms N  --phase-timeout-ms N  (0 = disabled; default 0)",
+            "  --resume <run-id|dir>    continue an interrupted session (fresh containers,",
+            "                sandbox/GOALS.md/transcripts preserved)",
+            "  --resume-prompt <text>   instructions injected when resuming a session",
+            "  --view <run-id|dir>      open the WebUI for a finished run without agents",
             "Timeouts are disabled by default so long runs continue; set any to a",
             "positive value (ms) to enable, and monitor progress in the WebUI.",
           ].join("\n"),
@@ -127,8 +145,9 @@ function parseArgs(argv) {
   }
   if (!args.task && args.taskFile) {
     args.task = fs.readFileSync(args.taskFile, "utf8");
+    args.taskSet = true;
   }
-  if (!args.task.trim()) {
+  if (!args.task.trim() && !args.view && !args.resume) {
     console.error("missing --task (or --task-file)");
     process.exit(2);
   }
@@ -137,6 +156,32 @@ function parseArgs(argv) {
 
 function timestampId() {
   return new Date().toISOString().replace(/[:.]/g, "-").replace(/Z$/, "");
+}
+
+/** Resolve a --resume/--view argument into a run directory. */
+function resolveRunArg(arg) {
+  const raw = String(arg || "");
+  if (path.isAbsolute(raw)) return path.resolve(raw);
+  if (raw.includes("/") || raw.startsWith(".")) return path.resolve(raw);
+  return path.resolve(REPO_ROOT, "runs", raw);
+}
+
+/** Read summary metadata written by a previous orchestrator run. */
+function readRunMeta(runDir) {
+  let meta = {};
+  try {
+    meta = JSON.parse(fs.readFileSync(path.join(runDir, "session.json"), "utf8"));
+  } catch {
+    // never finished cleanly
+  }
+  return {
+    sessionId: meta.sessionId || path.basename(runDir),
+    task: meta.task || "",
+    researcherModel: meta.researcherModel || null,
+    advisorModel: meta.advisorModel || null,
+    state: meta.state || null,
+    uiUrl: meta.uiUrl || "",
+  };
 }
 
 /** Address local agent processes use to reach the control plane. */
@@ -248,6 +293,33 @@ function modelIdOnly(spec) {
   return effortSep === -1 ? rest : rest.slice(0, effortSep);
 }
 
+/**
+ * Compose the prompt an agent receives when a session is resumed. Stresses that
+ * the container is fresh and the environment must be rebuilt from the sandbox.
+ */
+function buildResumePrompt({ task, initialState, expected, goal, resumePrompt }) {
+  return [
+    "This session is being RESUMED after an interruption.",
+    "",
+    "## Environment has been recreated",
+    "You are running in a FRESH container. Everything you installed in the previous session",
+    "(packages, tools, skills) is GONE. Everything committed to disk in the sandbox is",
+    "preserved: GOALS.md, source code, notes, and results. First inspect /sandbox to find out",
+    "where things stand, then (re)install whatever you need, then CONTINUE the task — do not",
+    "restart it from the beginning.",
+    "",
+    "## Where we left off",
+    `The previous session was interrupted in state ${initialState}${goal ? ` on goal ${goal}` : ""}.`,
+    expected
+      ? `You (${expected}) were expected to act next; carry on with that responsibility.`
+      : "Control returns to the human; the session awaits a decision.",
+    ...(resumePrompt ? ["", "## Extra instructions from the human", resumePrompt] : []),
+    "",
+    "## Broad research task",
+    task,
+  ].join("\n");
+}
+
 /** Merge contextWindow/maxTokens into the provider's model entry. */
 function applyModelLimits(provider, modelSpec, limits) {
   const id = modelIdOnly(modelSpec);
@@ -299,8 +371,48 @@ async function resolveRoleProvider(creds, modelSpec, { contextWindow, maxTokens,
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const orchestratorStartedAt = Date.now();
-  const sessionId = timestampId();
-  const runDir = path.resolve(args.runDir || path.join(REPO_ROOT, "runs", sessionId));
+
+  // Resolve the target run directory: a brand-new session, a resumed one, or a
+  // read-only view.
+  let resumed = false;
+  let viewing = false;
+  let runMeta = null;
+  let runDir;
+  if (args.view) {
+    viewing = true;
+    runDir = resolveRunArg(args.view);
+  } else if (args.resume) {
+    resumed = true;
+    runDir = resolveRunArg(args.resume);
+  } else {
+    runDir = path.resolve(args.runDir || path.join(REPO_ROOT, "runs", timestampId()));
+  }
+  if (
+    (resumed || viewing) &&
+    (!fs.existsSync(runDir) || !fs.statSync(runDir).isDirectory())
+  ) {
+    throw new Error(`run directory not found: ${runDir}`);
+  }
+  if (resumed || viewing) {
+    runMeta = readRunMeta(runDir);
+    if (!args.taskSet) args.task = runMeta.task || "";
+    if (!args.researcherModelSet && runMeta.researcherModel) {
+      args.researcherModel = runMeta.researcherModel;
+    }
+    if (!args.advisorModelSet && runMeta.advisorModel) {
+      args.advisorModel = runMeta.advisorModel;
+    }
+  }
+  if (!args.task.trim()) {
+    throw new Error(
+      "no task available for this run; pass --task (or --task-file) to provide one",
+    );
+  }
+  if (viewing && runMeta.state && !["DONE", "ABORTED"].includes(runMeta.state.state)) {
+    console.warn(`[research-loop] note: session was ${runMeta.state.state}, not finished; showing its current state.`);
+  }
+
+  const sessionId = (resumed || viewing) && runMeta?.sessionId ? runMeta.sessionId : timestampId();
   const transcriptDir = path.join(runDir, "transcripts");
   const researcherSandbox = path.join(runDir, "researcher-sandbox");
   const advisorSandbox = path.join(runDir, "advisor-sandbox");
@@ -309,8 +421,9 @@ async function main() {
   }
 
   // Optionally seed the researcher sandbox with host-provided resources.
+  // Skipped for resumed/viewed runs: the sandbox already holds prior state.
   let initialNote = "";
-  if (args.initialSandbox) {
+  if (args.initialSandbox && !resumed && !viewing) {
     const src = path.resolve(args.initialSandbox);
     if (!fs.existsSync(src) || !fs.statSync(src).isDirectory()) {
       throw new Error(`--initial-sandbox is not a directory: ${src}`);
@@ -325,6 +438,32 @@ async function main() {
   const goalsPath = path.join(researcherSandbox, "GOALS.md");
 
   const configPath = path.isAbsolute(args.config) ? args.config : path.resolve(args.config);
+
+  // ---- View-only mode: replay history + final state, no agents/containers. ----
+  if (viewing) {
+    const control = await startControlPlane({
+      token,
+      task: args.task,
+      transcriptDir,
+      sessionId,
+      goalsPath,
+      host: args.host,
+      port: args.port,
+      maxHandoffs: args.maxHandoffs,
+      initialNote,
+      skipSkills: args.skipSkills,
+      installedSkillsPath: path.join(researcherSandbox, "skills"),
+      viewOnly: true,
+      seedState: runMeta?.state || null,
+    });
+    console.log(`[research-loop] viewing session ${sessionId}`);
+    console.log(`[research-loop] UI: ${control.url}`);
+    if (args.open) openBrowser(control.url);
+    console.log("[research-loop] press Ctrl-C to exit");
+    await new Promise(() => {});
+    return;
+  }
+
   let researcherCreds;
   let advisorCreds;
   let fauxResearcher = null;
@@ -371,6 +510,21 @@ async function main() {
     console.log(`[research-loop] advisor (${args.advisorModel}): ${advisorLimits.note}`);
   }
 
+  // When resuming, restore the control-plane state from the on-disk session
+  // log so the machines pick up where the previous process left off.
+  let replay = null;
+  if (resumed) {
+    replay = replaySessionLog(transcriptDir);
+    if (!replay.started) {
+      throw new Error(
+        `cannot resume ${runDir}: no usable session log found; start a new run instead`,
+      );
+    }
+    if (replay.state.state === STATES.DONE) {
+      throw new Error(`session ${sessionId} already completed; use --view to review it`);
+    }
+  }
+
   const control = await startControlPlane({
     token,
     task: args.task,
@@ -383,9 +537,27 @@ async function main() {
     initialNote,
     skipSkills: args.skipSkills,
     installedSkillsPath: path.join(researcherSandbox, "skills"),
+    viewOnly: resumed,
+    initialState: replay?.state || null,
+    initialResearcherSteps: replay?.researcherSteps || 0,
   });
-  console.log(`[research-loop] session ${sessionId}`);
+  console.log(`[research-loop] session ${sessionId}${resumed ? " (resumed)" : ""}`);
   console.log(`[research-loop] UI: ${control.url}`);
+
+  if (resumed) {
+    const expected = expectedRoleForState(replay.state.state);
+    const goal = replay.state.currentGoalId;
+    const resumeText = buildResumePrompt({
+      task: args.task,
+      initialState: replay.state.state,
+      expected,
+      goal,
+      resumePrompt: args.resumePrompt,
+      skipSkills: args.skipSkills,
+    });
+    control.broker.resume(resumeText);
+    console.log(`[research-loop] resumed in state ${replay.state.state} (${expected || "awaiting human"})`);
+  }
 
   // Ctrl-C / termination should abort the session and let the cleanup path
   // below stop the containers, instead of leaking them.
@@ -407,6 +579,7 @@ async function main() {
     maxTurnsPerPhase: args.maxTurnsPerPhase,
     abortTimeoutMs: args.abortTimeoutMs,
     phaseTimeoutMs: args.phaseTimeoutMs,
+    skipSkills: args.skipSkills,
   };
 
   const localBrokerUrl = `http://${localConnectHost(args.host)}:${control.port}`;
@@ -601,6 +774,7 @@ async function main() {
     task: args.task,
     researcherModel: args.researcherModel,
     advisorModel: args.advisorModel,
+    token,
     state: control.broker.snapshot(),
     agentStats: agentEvents,
     agentErrors: Object.keys(agentFatal).length ? agentFatal : undefined,

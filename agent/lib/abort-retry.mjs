@@ -47,7 +47,15 @@ export function isContextOverflowError(error) {
     /too many tokens/i.test(text) ||
     /exceeds the model'?s maximum/i.test(text) ||
     /maximum number of tokens/i.test(text) ||
-    /reduce the number of tokens/i.test(text)
+    /reduce the number of tokens/i.test(text) ||
+    // vLLM / OpenAI-compatible servers that refuse to truncate and reject the
+    // request instead:
+    //   prompt (492952 tokens) + max tokens (32000) exceeds the context (524288);
+    //   requests are never truncated. Send a smaller max_tokens ...
+    /exceeds the context/i.test(text) ||
+    /prompt \(\d+\s*tokens\).*exceeds/i.test(text) ||
+    /smaller max[\s_-]?tokens/i.test(text) ||
+    /never (be )?truncated/i.test(text)
   );
 }
 

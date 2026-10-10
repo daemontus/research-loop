@@ -185,6 +185,7 @@ function mergeRetries(transcriptRetries, reported) {
   const base = { ...transcriptRetries };
   if (reported) {
     if (Number.isFinite(reported.compacted)) base.compaction = reported.compacted;
+    if (Number.isFinite(reported.proximityCompactions)) base.proximity = reported.proximityCompactions;
     if (Number.isFinite(reported.abortRetries)) base.abort = reported.abortRetries;
     if (Number.isFinite(reported.rateLimitRetries)) base.rateLimit = reported.rateLimitRetries;
     if (Number.isFinite(reported.contextOverflowRetries)) {

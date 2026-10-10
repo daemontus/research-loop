@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import {
   bindControlTools,
+  advisorControlToolDefs,
   researcherControlToolDefs,
 } from "../agent/lib/control-tools.mjs";
 
@@ -41,5 +42,23 @@ describe("control tools", () => {
     );
     // The first handoff still stands.
     assert.equal(controlState.pendingHandoff.kind, "proposal");
+  });
+
+  it("exposes an optional advisory field on the review tools (non-blocking)", () => {
+    const advisoryKeys = (defs) => {
+      const out = {};
+      for (const def of defs) {
+        const schema = def.parameters?.properties || {};
+        out[def.name] = Boolean(schema.advisory);
+      }
+      return out;
+    };
+    const advisor = advisoryKeys(advisorControlToolDefs());
+    assert.equal(advisor.approve_skills, true);
+    assert.equal(advisor.approve_plan, true);
+    assert.equal(advisor.request_plan_changes, true);
+    assert.equal(advisor.accept_result, true);
+    assert.equal(advisor.request_result_changes, true);
+    assert.equal(advisor.request_task_changes, true);
   });
 });

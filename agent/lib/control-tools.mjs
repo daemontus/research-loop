@@ -28,6 +28,14 @@ const FEEDBACK = Type.String({ description: "Short explanation for the researche
 const CHANGES = Type.Array(Type.String(), {
   description: "Specific, actionable required changes.",
 });
+const ADVISORY = Type.Optional(
+  Type.Array(Type.String(), {
+    description:
+      "Optional, non-blocking recommendations: higher-value directions, alternative " +
+      "approaches, extra analyses. Fire-and-forget — the researcher may adopt or decline " +
+      "them; they must NOT block acceptance.",
+  }),
+);
 
 /** Tool definitions for the researcher role. */
 export function researcherControlToolDefs() {
@@ -193,6 +201,7 @@ export function advisorControlToolDefs() {
       parameters: Type.Object({
         feedback: FEEDBACK,
         conditions: strArray("Optional constraints on how the skills may be used."),
+        advisory: ADVISORY,
       }),
     },
     {
@@ -218,6 +227,7 @@ export function advisorControlToolDefs() {
         goalId: GOAL_ID,
         feedback: FEEDBACK,
         conditions: strArray("Optional conditions the researcher must honor while executing."),
+        advisory: ADVISORY,
       }),
     },
     {
@@ -232,6 +242,7 @@ export function advisorControlToolDefs() {
         goalId: GOAL_ID,
         requiredChanges: CHANGES,
         feedback: FEEDBACK,
+        advisory: ADVISORY,
       }),
     },
     {
@@ -245,6 +256,7 @@ export function advisorControlToolDefs() {
         goalId: GOAL_ID,
         feedback: FEEDBACK,
         verification: strArray("How you verified the result (commands, files, checks)."),
+        advisory: ADVISORY,
       }),
     },
     {
@@ -258,6 +270,7 @@ export function advisorControlToolDefs() {
         goalId: GOAL_ID,
         requiredChanges: CHANGES,
         feedback: FEEDBACK,
+        advisory: ADVISORY,
       }),
     },
     {
@@ -283,6 +296,7 @@ export function advisorControlToolDefs() {
       parameters: Type.Object({
         requiredChanges: CHANGES,
         feedback: FEEDBACK,
+        advisory: ADVISORY,
       }),
     },
   ];

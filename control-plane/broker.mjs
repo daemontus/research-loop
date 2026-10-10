@@ -19,6 +19,105 @@ import {
 } from "./state-machine.mjs";
 import { validateEnvelope } from "../agent/lib/protocol.mjs";
 
+export const ROLES = ["researcher", "advisor"];
+
+/** The role expected to act in a given state, or null (human/terminal). */
+export function expectedRoleForState(stateValue) {
+  switch (stateValue) {
+    case STATES.INIT:
+    case STATES.RESEARCHER_SKILLS:
+    case STATES.RESEARCHER_INSTALL_SKILLS:
+    case STATES.RESEARCHER_DECOMPOSE:
+    case STATES.RESEARCHER_EXECUTE:
+      return "researcher";
+    case STATES.ADVISOR_REVIEW_SKILLS:
+    case STATES.ADVISOR_REVIEW_PLAN:
+    case STATES.ADVISOR_REVIEW_RESULT:
+    case STATES.ADVISOR_REVIEW_TASK:
+      return "advisor";
+    default:
+      return null;
+  }
+}
+
+/**
+ * Replay a session.jsonl file back into a control-plane state so a run can be
+ * resumed from where it left off (containers are fresh; GOALS.md/artifacts and
+ * this log are what persist between processes).
+ *
+ * Entries of kind "start"/"handoff"/"human_decision" drive the state machine;
+ * everything else (deliveries, rejects, aborts, terminals) records the run but
+ * does not change state. The terminal "abort" entry is deliberately not applied
+ * so the returned state is where the agents should continue.
+ *
+ * @param {string} transcriptDir
+ * @returns {{ state: object, researcherSteps: number, skipSkills: boolean, started: boolean }}
+ */
+export function replaySessionLog(transcriptDir) {
+  const file = path.join(transcriptDir, "session.jsonl");
+  let state = createSessionState();
+  let started = false;
+  let skipSkills = false;
+  let researcherSteps = 0;
+  let entries = [];
+  try {
+    entries = fs
+      .readFileSync(file, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => {
+        try {
+          return JSON.parse(line);
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+  } catch {
+    // no session log yet
+  }
+  for (const e of entries) {
+    if (e.kind === "start") {
+      skipSkills = Boolean(e.skipSkills);
+      const r = applyStart(state, { skipSkills });
+      state = r.state;
+      started = true;
+      // Preserve the original session start time for duration accounting.
+      if (typeof e.ts === "number" && e.ts > 0) state.startedAt = e.ts;
+      continue;
+    }
+    if (!started) continue;
+    if (e.kind === "handoff") {
+      const envelope = {
+        role: e.from,
+        kind: e.handoffKind,
+        goalId: e.goalId ?? null,
+        text: e.text ?? "",
+        payload: e.payload ?? {},
+        ts: e.ts ?? Date.now(),
+      };
+      const r = applyEnvelope(state, envelope);
+      if (!r.error) {
+        state = r.state;
+        if (e.from === "researcher" && (e.handoffKind === "proposal" || e.handoffKind === "result")) {
+          researcherSteps += 1;
+        }
+      }
+      continue;
+    }
+    if (e.kind === "human_decision") {
+      const r = applyHumanDecision(state, { action: e.action, text: e.text, target: e.target });
+      if (!r.error) {
+        state = r.state;
+        const last = state.humanDecisions[state.humanDecisions.length - 1];
+        if (last && typeof e.ts === "number" && e.ts > 0) last.ts = e.ts;
+      }
+      continue;
+    }
+  }
+  return { state, researcherSteps, skipSkills, started };
+}
+
 export function createBroker({
   token,
   task,
@@ -29,36 +128,24 @@ export function createBroker({
   initialNote = "",
   skipSkills = false,
   installedSkillsPath = null,
+  initialState = null,
+  initialResearcherSteps = 0,
 }) {
   const events = new EventEmitter();
-  const roles = ["researcher", "advisor"];
+  const roles = ROLES;
   const queues = new Map(roles.map((r) => [r, []]));
   const waiters = new Map(roles.map((r) => [r, []]));
   const registered = new Map(roles.map((r) => [r, null]));
   const deferredHuman = new Map(roles.map((r) => [r, []]));
   let seq = 0;
-  let state = createSessionState();
+  let state = initialState ? { ...initialState } : createSessionState();
   let closed = false;
   let rejections = 0;
-  let researcherSteps = 0;
+  let researcherSteps = initialResearcherSteps || 0;
 
   /** The role that must act next, or null (human/terminal). */
-  function expectedRole(stateValue) {
-    switch (stateValue) {
-      case STATES.INIT:
-      case STATES.RESEARCHER_SKILLS:
-      case STATES.RESEARCHER_INSTALL_SKILLS:
-      case STATES.RESEARCHER_DECOMPOSE:
-      case STATES.RESEARCHER_EXECUTE:
-        return "researcher";
-      case STATES.ADVISOR_REVIEW_SKILLS:
-      case STATES.ADVISOR_REVIEW_PLAN:
-      case STATES.ADVISOR_REVIEW_RESULT:
-      case STATES.ADVISOR_REVIEW_TASK:
-        return "advisor";
-      default:
-        return null;
-    }
+  function expectedRole(...a) {
+    return expectedRoleForState(...a);
   }
 
   const sessionLogPath = path.join(transcriptDir, "session.jsonl");
@@ -162,6 +249,32 @@ export function createBroker({
       payload: {},
       ts: Date.now(),
     });
+  }
+
+  /**
+   * Resume an interrupted session. The broker state was already restored by
+   * creoring the broker with `initialState`; this delivers the resume prompt
+   * to whichever role is expected to act next (no state transition, unlike
+   * start()).
+   *
+   * @param {string} contextText full prompt text for the acting agent
+   * @param {string} [initialNote]
+   */
+  function resume(contextText, initialNote = "") {
+    if (closed) return { ok: false, error: "session closed" };
+    logSession("resume", { task, initialNote });
+    const expected = expectedRole(state.state);
+    if (expected) {
+      deliver(expected, {
+        role: "control",
+        kind: "start",
+        text: contextText,
+        payload: {},
+        ts: Date.now(),
+      });
+    }
+    events.emit("state", snapshot());
+    return { ok: true, state: state.state, expecting: expected };
   }
 
   /**
@@ -382,12 +495,14 @@ export function createBroker({
       startedAt: state.startedAt,
       finishedAt: state.finishedAt,
       terminalReason: state.terminalReason,
+      expecting: expectedRole(state.state),
     };
   }
 
   return {
     events,
     start,
+    resume,
     receiveAgentEnvelope,
     humanDecision,
     humanMessage,
@@ -400,6 +515,15 @@ export function createBroker({
       registered.set(role, Date.now());
       events.emit("state", snapshot());
       return { ok: true, registered: snapshot().registered };
+    },
+    /**
+     * Restore a previously-replayed state (used by --view so a completed run
+     * shows its final state without starting containers) and broadcast it.
+     */
+    seed(nextState) {
+      state = { ...nextState };
+      events.emit("state", snapshot());
+      return snapshot();
     },
     isClosed: () => closed,
     get state() {

@@ -43,6 +43,19 @@
       header h1 { font-size: 15px; margin: 0; font-weight: 600; }
       .stat { font-size: 12px; color: var(--muted); }
       .stat b { color: var(--text); font-weight: 600; }
+      .stat .tok-sub { color: var(--muted); font-size: 11px; }
+      .live { transition: color .3s; }
+      .live.active { color: var(--ok); }
+      .live.idle { color: var(--warn); }
+      .searchbox { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+      .searchbox input {
+        background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+        border-radius: 6px; padding: 4px 8px; font: inherit; font-size: 12px; width: 220px;
+      }
+      .searchbox input:focus { outline: none; border-color: #3d4757; }
+      #search-count { font-size: 11px; color: var(--muted); min-width: 2em; text-align: right; }
+      .entry.search-hit { outline: 1px solid #3d4757; }
+      .entry.search-miss { opacity: .45; }
       .badge {
         padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700;
         text-transform: uppercase; letter-spacing: .04em;
@@ -63,13 +76,18 @@
       .latest[hidden] { display: none !important; }
       aside {
         width: 380px; border-left: 1px solid var(--border); background: var(--panel);
-        display: flex; flex-direction: column; min-height: 0;
+        display: flex; flex-direction: column; min-height: 0; flex: none; min-width: 200px;
       }
       aside .side-head { padding: 10px 14px; border-bottom: 1px solid var(--border); font-weight: 600; }
       #overview-wrap {
         width: 300px; border-left: 1px solid var(--border); background: var(--panel);
-        display: flex; flex-direction: column; min-height: 0;
+        display: flex; flex-direction: column; min-height: 0; flex: none; min-width: 180px;
       }
+      .divider {
+        flex: none; width: 5px; cursor: col-resize; background: transparent;
+        border-left: 1px solid var(--border); border-right: 1px solid var(--border);
+      }
+      .divider:hover, .divider.dragging { background: #3d4757; }
       #overview-wrap .side-head { padding: 10px 14px; border-bottom: 1px solid var(--border); font-weight: 600; }
       #overview { flex: 1; overflow-y: auto; padding: 8px; }
       .ov-item {
@@ -170,9 +188,15 @@
       <span id="state" class="badge state">…</span>
       <span class="stat">goal <b id="goal">-</b></span>
       <span class="stat">handoffs <b id="handoffs">0</b></span>
-      <span class="stat">researcher <b id="reg-researcher">offline</b></span>
-      <span class="stat">advisor <b id="reg-advisor">offline</b></span>
-      <span class="filters" style="margin-left:auto">
+      <span class="stat">tokens <b id="tok-total">0</b> <span class="tok-sub">in <b id="tok-in">0</b> · out <b id="tok-out">0</b> · cached <b id="tok-cache">0</b></span></span>
+      <span class="stat" title="who the state machine expects to act next">expecting <b id="expecting">-</b></span>
+      <span class="stat">researcher <b id="live-researcher" class="live">offline</b></span>
+      <span class="stat">advisor <b id="live-advisor" class="live">offline</b></span>
+      <span class="searchbox">
+        <input id="search" type="search" placeholder="search transcript…" autocomplete="off" />
+        <span id="search-count" title="matching transcript entries"></span>
+      </span>
+      <span class="filters">
         <label><input type="checkbox" data-filter="researcher" checked /> researcher</label>
         <label><input type="checkbox" data-filter="advisor" checked /> advisor</label>
         <label><input type="checkbox" data-filter="human" checked /> human</label>
@@ -184,11 +208,13 @@
         <div id="timeline"></div>
         <button id="latest" class="latest" type="button" hidden>↓ latest</button>
       </div>
+      <div class="divider" id="resize-overview" title="Drag to resize"></div>
       <section id="overview-wrap">
         <div class="side-head">Overview</div>
         <div id="overview"></div>
       </section>
-      <aside>
+      <div class="divider" id="resize-goals" title="Drag to resize"></div>
+      <aside id="goals-pane">
         <div class="side-head">Goals</div>
         <div id="goals"><div class="muted-note">(not yet written)</div></div>
         <div id="approval">
@@ -218,6 +244,10 @@
       const overview = document.getElementById("overview");
       const filters = { researcher: true, advisor: true, human: true, control: true };
       let overviewItems = [];
+      let searchQuery = "";
+      let currentState = null;
+      const tokens = { researcher: { in: 0, out: 0, cache: 0, reasoning: 0 }, advisor: { in: 0, out: 0, cache: 0, reasoning: 0 } };
+      const lastActivity = { researcher: null, advisor: null };
 
       function atBottom() {
         return timeline.scrollTop + timeline.clientHeight >= timeline.scrollHeight - 60;
@@ -239,6 +269,13 @@
       });
       latestBtn.addEventListener("click", scrollToBottom);
 
+      const searchInput = document.getElementById("search");
+      const searchCount = document.getElementById("search-count");
+      searchInput.addEventListener("input", () => {
+        searchQuery = searchInput.value.trim().toLowerCase();
+        applyFilters();
+      });
+
       document.querySelectorAll("[data-filter]").forEach((cb) =>
         cb.addEventListener("change", () => {
           filters[cb.dataset.filter] = cb.checked;
@@ -247,11 +284,71 @@
       );
 
       function applyFilters() {
+        let hits = 0;
         for (const el of timeline.querySelectorAll(".entry")) {
           const who = el.dataset.who || "control";
-          el.style.display = filters[who] === false ? "none" : "";
+          const text = el.dataset.searchText || (el.dataset.searchText = el.textContent.toLowerCase());
+          const roleVisible = filters[who] !== false;
+          let visible = roleVisible;
+          let hit = false;
+          if (roleVisible && searchQuery) {
+            hit = text.includes(searchQuery);
+            visible = hit;
+          }
+          el.classList.toggle("search-hit", hit && searchQuery);
+          el.classList.toggle("search-miss", Boolean(searchQuery) && !hit && roleVisible);
+          el.style.display = visible ? "" : "none";
+          if (hit) hits += 1;
         }
+        if (searchQuery) searchCount.textContent = `${hits}`;
+        else searchCount.textContent = "";
       }
+
+      // --- live token counts + activity -----------------------------------
+      function recordUsage(role, usage) {
+        const t = tokens[role];
+        if (!t || !usage) return;
+        t.in += usage.input || 0;
+        t.out += usage.output || 0;
+        t.cache += usage.cacheRead || 0;
+      }
+
+      function fmtNum(n) {
+        return (n || 0).toLocaleString("en-US");
+      }
+      function fmtAgo(ts) {
+        if (!ts) return "offline";
+        const s = Math.max(0, (Date.now() - ts) / 1000);
+        if (s < 15) return "active";
+        if (s < 120) return "just now";
+        const m = Math.round(s / 60);
+        if (m < 60) return `idle ${m}m`;
+        const h = Math.floor(m / 60);
+        return `idle ${h}h${m % 60 ? ` ${m % 60}m` : ""}`;
+      }
+
+      function updateStats(state) {
+        const tot = { in: 0, out: 0, cache: 0 };
+        for (const role of ["researcher", "advisor"]) {
+          tot.in += tokens[role].in;
+          tot.out += tokens[role].out;
+          tot.cache += tokens[role].cache;
+          const el = document.getElementById(`live-${role}`);
+          el.className = `live ${fmtAgo(lastActivity[role]) === "active" ? "active" : lastActivity[role] ? "idle" : "offline"}`;
+          el.textContent = fmtAgo(lastActivity[role]);
+        }
+        document.getElementById("tok-in").textContent = fmtNum(tot.in);
+        document.getElementById("tok-out").textContent = fmtNum(tot.out);
+        document.getElementById("tok-cache").textContent = fmtNum(tot.cache);
+        document.getElementById("tok-total").textContent = fmtNum(tot.in + tot.out + tot.cache);
+        const expectEl = document.getElementById("expecting");
+        expectEl.textContent = state?.expecting || "–";
+        expectEl.title =
+          expectEl.textContent === "–"
+            ? "no agent expected (awaiting human or finished)"
+            : `the ${expectEl.textContent} should act next`;
+      }
+      setInterval(() => updateStats(currentState), 1000);
 
       function esc(s) {
         return String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
@@ -286,6 +383,7 @@
           ["plan", "Plan"],
           ["acceptanceCriteria", "Acceptance criteria"],
           ["requiredChanges", "Required changes"],
+          ["advisory", "Advisory (non-blocking)"],
           ["artifacts", "Artifacts"],
           ["verification", "Verification"],
           ["deliverables", "Deliverables"],
@@ -551,6 +649,14 @@
       }
 
       function addEntry(entry, scroll = true) {
+        // Liveness: any entry an agent wrote counts as recent activity (recorded
+        // before render filters, so skipped bookkeeping still refreshes it).
+        if (entry.agent === "researcher" || entry.agent === "advisor") {
+          if (typeof entry.ts === "number" && entry.ts > 0) lastActivity[entry.agent] = entry.ts;
+          if (entry.kind === "message" && entry.role === "assistant" && entry.usage) {
+            recordUsage(entry.agent, entry.usage);
+          }
+        }
         // Agents already record their own inbound/outbound handoffs; the
         // control-plane duplicates would render twice, so skip them here.
         // (They remain in session.jsonl for audit.)
@@ -652,13 +758,17 @@
       }
 
       function updateState(state) {
+        currentState = state;
         document.getElementById("state").textContent = state.state || "?";
         document.getElementById("state").className = "badge state " + (state.state || "");
         document.getElementById("goal").textContent = state.currentGoalId || "-";
         document.getElementById("handoffs").textContent = state.handoffs ?? 0;
-        document.getElementById("reg-researcher").textContent = state.registered?.researcher ? "online" : "offline";
-        document.getElementById("reg-advisor").textContent = state.registered?.advisor ? "online" : "offline";
+        // When an agent comes online, seed its liveness so the badge is not
+        // "offline" until its first transcript entry.
+        if (state.registered?.researcher && !lastActivity.researcher) lastActivity.researcher = Date.now();
+        if (state.registered?.advisor && !lastActivity.advisor) lastActivity.advisor = Date.now();
         document.getElementById("approval").classList.toggle("visible", state.state === "AWAITING_HUMAN");
+        updateStats(state);
       }
 
       let lastGoalsRaw = null;
@@ -732,6 +842,35 @@
         }
         document.getElementById("human-text").value = "";
       }
+
+      // --- draggable panel sizes -------------------------------------------
+      function makeResizer(dividerId, panelId, min) {
+        const divider = document.getElementById(dividerId);
+        const panel = document.getElementById(panelId);
+        if (!divider || !panel) return;
+        divider.addEventListener("pointerdown", (e) => {
+          e.preventDefault();
+          divider.setPointerCapture?.(e.pointerId);
+          divider.classList.add("dragging");
+          document.body.style.userSelect = "none";
+          const startX = e.clientX;
+          const startW = panel.getBoundingClientRect().width;
+          const move = (ev) => {
+            const w = Math.max(min, startW + (ev.clientX - startX));
+            panel.style.width = `${w}px`;
+          };
+          const up = () => {
+            divider.classList.remove("dragging");
+            document.body.style.userSelect = "";
+            window.removeEventListener("pointermove", move);
+            window.removeEventListener("pointerup", up);
+          };
+          window.addEventListener("pointermove", move);
+          window.addEventListener("pointerup", up);
+        });
+      }
+      makeResizer("resize-overview", "overview-wrap", 180);
+      makeResizer("resize-goals", "goals-pane", 200);
     </script>
   </body>
 </html>

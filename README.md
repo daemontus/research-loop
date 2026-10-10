@@ -107,13 +107,20 @@ has three panes:
   collapsed to 5 lines with a "Show more" toggle; reasoning and tool-call
   arguments are collapsible; handoff payloads (plans, acceptance criteria,
   required changes, feedback, ...) render as structured fields rather than raw
-  JSON.
+  JSON. A search box filters entries by text; the left/right side panels can be
+  resized by dragging the dividers.
 - **Overview** (middle) — one clickable item per high-level phase (plan
   proposed/approved/changed, result submitted/accepted/changed, task completion,
   human decisions). Clicking scrolls the transcript to that phase and highlights
   it; the current phase is highlighted as you scroll.
 - **Goals** (right) — the researcher's `GOALS.md`, rendered from Markdown to
   HTML.
+
+The header shows live totals (handoffs, tokens consumed, who the state machine
+expects to act next) and a per-agent **liveness** indicator ("active", "idle
+N m", or "offline"). Liveness is informational only — there are no heartbeat
+timeouts, so an agent may legitimately "think" or run a tool for hours without
+being killed.
 
 The server binds to `127.0.0.1` by default; pass `--host <ip>` (e.g. `0.0.0.0`)
 and/or `--port <n>` to change the bind address and port. All `/api/*` endpoints
@@ -172,6 +179,9 @@ Open the printed UI URL to watch and to approve completion.
 | `--host` | `127.0.0.1` | control-plane/WebUI bind address (`0.0.0.0` for all interfaces) |
 | `--port` | 0 | control-plane port (0 = random) |
 | `--run-dir` | `runs/<timestamp>` | output directory |
+| `--resume <id\|dir>` | — | resume an interrupted session (see below) |
+| `--resume-prompt <text>` | — | extra instructions injected into the resume prompt |
+| `--view <id\|dir>` | — | open the WebUI for a finished run, no agents |
 | `--print-jobs` | off | print the container job JSON and exit |
 
 ## Seeding the researcher sandbox
@@ -251,6 +261,26 @@ instructed to use anything under `/sandbox/skills/`.
 The image ships the `skills` CLI and `DISABLE_TELEMETRY=1`. Skill guidance lives
 in `config/researcher/skills/skills-discovery/SKILL.md` and
 `config/advisor/skills/reviewing-skills/SKILL.md`.
+
+## Advisor review doctrine
+
+The advisor reviews every plan and result and is explicitly expected to be a
+*harsher critic of the high-level solution*, not just a goals-checker. Its system
+prompt carries an always-on **advisor doctrine** (verify / red-team / explore) and a
+mandatory exploratory self-check on every review — including "is there value we can
+add beyond what is explicitly in the task?" — so a short, vague brief does not leave
+the researcher doing the minimum-viable thing.
+
+Feedback is split into **gating** vs **advisory**: `requiredChanges`/`conditions`
+hard-block a goal, while the optional `advisory` field carries fire-and-forget
+recommendations (higher-value directions, extra analyses) that never block
+acceptance. The researcher is instructed to weigh `advisory` items and either adopt
+or briefly justify declining them. The advisor's reasoning depth lives in four
+always-on reference packs under `config/advisor/skills/` (adapted from skills.sh):
+`advisor-brainstorming` (value beyond the brief), `advisor-grilling` (stress-test
+plans/results), `advisor-caveman-review` (terse, concrete feedback), and
+`advisor-research-rigor` (baselines, comparability, ablations, reproducibility),
+and a decision-tree index in `config/advisor/skills/README.md`.
 
 ## Configuration
 
@@ -343,6 +373,34 @@ pi-ai's `fauxProvider`, with no network access.
 - **Ctrl-C.** Interrupting the orchestrator aborts the session and stops both
   containers.
 
+## Resuming and reviewing runs
+
+Long sessions sometimes die (provider outage, host reboot). New containers start
+fresh, but the sandbox and transcripts on disk persist, so a run can be
+continued:
+
+```bash
+node orchestrator/run.mjs --resume runs/<id> \
+  --resume-prompt "Re-examine G3; the reviewer disagreed with the permutation design."
+```
+
+The control-plane state is rebuilt from `runs/<id>/transcripts/session.jsonl`,
+so the loop resumes in whatever state it was in (plan review, result review,
+awaiting human, ...) and the resume prompt is delivered to the agent expected to
+act. The prompt always warns the agent that its container/environment was rebuilt
+from scratch and it must reconstitute installed tooling, re-read GOALS.md and its
+notes, and *continue* (not restart) the task. `--resume` requires no `--task`
+when the run's `session.json` already records one (flags override it).
+
+To review a finished run without starting containers:
+
+```bash
+node orchestrator/run.mjs --view runs/<id>
+```
+
+This serves the WebUI with the run's final state (goals, transcripts, statistics)
+and no agents, until you interrupt it.
+
 ## Reliability hardening
 
 Long sessions are protected against the common derail modes:
@@ -355,6 +413,16 @@ Long sessions are protected against the common derail modes:
 - **Compaction reclaims file bodies**: older tool-call arguments (e.g.
   `write_file` content) are truncated, in addition to stripping tool output and
   stale reasoning.
+- **Prompt size accounts for cache hits**: the reported prompt is the full
+  prompt (`input + cacheRead + cacheWrite`), as pi-ai defines it, not just the
+  uncached delta — so providers that report most of the prompt as `cacheRead`
+  (e.g. vLLM) still trigger compaction correctly.
+- **Mid-phase proximity compaction**: when a context window is known and the
+  reported prompt approaches it, the runner stops the phase, compacts, and
+  continues — even with providers that refuse to truncate and return a `400`
+  ("exceeds the context ... never truncated") instead of a `length` stop. Such
+  rejections are also recognized as context overflow and recovered rather than
+  retried as transient errors.
 - **Timeouts are optional and off by default.** By default a run is only bounded
   by progress (`--max-handoffs`) and the rejection cap, so long sessions keep
   going; monitor them live in the WebUI. Set `--abort-timeout-ms` (per-attempt),

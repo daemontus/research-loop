@@ -9,6 +9,7 @@ import {
   hasIncompleteTrailingToolTurn,
   isAbortError,
   isAbortStop,
+  isContextOverflowError,
   isHttp429,
   isPartialAssistantTurn,
   isRateLimitAssistant,
@@ -268,8 +269,17 @@ describe("transient provider errors", () => {
     assert.equal(isTransientProviderError("HTTP 400 Bad Request"), false);
   });
 
-  it("treats a trailing terminated assistant as a retryable partial turn", () => {
-    const dropped = assistant({ stopReason: "error", errorMessage: "terminated" });
+  it("classifies vLLM's never-truncate context rejection as context overflow", () => {
+    const vllm =
+      '400: {"type":"invalid_request_error","message":"prompt (492952 tokens) + max tokens ' +
+      '(32000) exceeds the context (524288); requests are never truncated. Send a smaller ' +
+      'max_tokens (at most 31328 here), ..."}';
+    assert.equal(isContextOverflowError(vllm), true);
+    // ...and therefore NOT a transient provider error (it has its own recovery).
+    assert.equal(isTransientProviderError(vllm), false);
+  });
+
+  it("treats a trailing terminated assistant as a retryable partial turn", () => {    const dropped = assistant({ stopReason: "error", errorMessage: "terminated" });
     assert.equal(isTransientProviderAssistant(dropped), true);
     assert.equal(isPartialAssistantTurn(dropped), true);
     assert.equal(shouldRetryTransientProviderTurn([user("go"), dropped]), true);

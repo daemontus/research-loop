@@ -80,6 +80,9 @@ export class AgentSession {
     this.maxRateLimitRetries = opts.maxRateLimitRetries ?? DEFAULT_MAX_RATE_LIMIT_RETRIES;
     this.rateLimitBackoffMs = opts.rateLimitBackoffMs ?? DEFAULT_RATE_LIMIT_BACKOFF_MS;
     this.maxContextOverflowRetries = opts.maxContextOverflowRetries ?? 3;
+    // Safety cap on proximity-triggered compactions within a run, so a prompt
+    // that cannot be shrunk enough does not compact forever.
+    this.maxProximityCompactions = opts.maxProximityCompactions ?? 20;
     this.maxProviderRetries = opts.maxProviderRetries ?? 4;
     this.maxRetryDelayMs = opts.maxRetryDelayMs ?? 60000;
     // Transient provider/transport errors (e.g. "terminated") recovered by
@@ -106,6 +109,7 @@ export class AgentSession {
     this.rateLimitRetries = 0;
     this.contextOverflowRetries = 0;
     this.providerErrorRetries = 0;
+    this.proximityCompactions = 0;
     this.agentWarnings = [];
     this.tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 };
 
@@ -143,6 +147,10 @@ export class AgentSession {
         if (session.controlState.pendingHandoff) return true;
         const stop = lastAssistantStopReason(session.agent?.state?.messages || []);
         if (isCompactionTrigger(stop) || String(stop).toLowerCase() === "aborted") return true;
+        // Stop mid-phase when the prompt approaches the context window, so the
+        // runner can compact before the next request instead of letting the
+        // provider reject it.
+        if (session.#shouldStopToCompact()) return true;
         if (session.maxTurnsPerPhase > 0 && session.phaseTurns >= session.maxTurnsPerPhase) {
           return true;
         }
@@ -167,7 +175,16 @@ export class AgentSession {
           session.tokens.cacheRead += msg.usage.cacheRead || 0;
           session.tokens.cacheWrite += msg.usage.cacheWrite || 0;
           session.tokens.reasoning += msg.usage.reasoning || 0;
-          if (msg.usage.input) session.lastInputTokens = msg.usage.input;
+          // The effective prompt size is the full prompt: uncached input plus
+          // the cached read/write portions (pi-ai defines prompt_tokens this
+          // way). Using only `input` undercounts badly when prompt caching is
+          // active (e.g. `input` is a tiny delta while `cacheRead` holds the
+          // bulk of the prompt), which stops proactive compaction from firing.
+          const promptTokens =
+            (msg.usage.input || 0) +
+            (msg.usage.cacheRead || 0) +
+            (msg.usage.cacheWrite || 0);
+          if (promptTokens > 0) session.lastInputTokens = promptTokens;
         }
         if (isCompactionTrigger(msg?.stopReason)) session.lengthStops += 1;
       }
@@ -376,29 +393,40 @@ export class AgentSession {
     return true;
   }
 
-  /** Compact before prompting if the last reported input is near the window. */
-  #maybeCompactProactively() {
-    const cw = this.contextWindow;
-    if (!cw || cw <= 0 || this.lastInputTokens <= 0) return;
-    const reserve = (this.maxOutputTokens || 8192) + 4096;
-    if (this.lastInputTokens + reserve > cw) {
-      const warning =
-        `proactive-compaction: last input ~${this.lastInputTokens} tokens; ` +
-        `context window ${cw}, reserve ${reserve}`;
-      this.agentWarnings.push(warning);
-      this.transcript.write("system", { content: warning });
-      this.#compactAgentHistory(this.agent.state.messages);
-    }
+  /** Output-token headroom reserved for the next request when compacting. */
+  #outputReserve() {
+    return (this.maxOutputTokens || 8192) + 4096;
   }
 
-  async #maybeCompact() {
-    const stopReason = lastAssistantStopReason(this.agent?.state?.messages || []);
-    if (!isCompactionTrigger(stopReason)) return false;
-    if (this.#phaseBudgetExceeded()) {
-      this.agentWarnings.push("phase budget exceeded; skipping compaction");
-      return false;
-    }
-    if (this.maxTurnsPerPhase > 0 && this.phaseTurns >= this.maxTurnsPerPhase) return false;
+  /**
+   * Whether the prompt is close enough to the context window that we should
+   * stop the phase and compact. Only applies when a context window is known
+   * and the provider has actually reported a prompt size.
+   */
+  #shouldStopToCompact() {
+    if (this.controlState.pendingHandoff) return false;
+    if (!(this.contextWindow > 0) || !(this.lastInputTokens > 0)) return false;
+    return this.lastInputTokens + this.#outputReserve() > this.contextWindow;
+  }
+
+  /** Compact before prompting if the last reported prompt is near the window. */
+  #maybeCompactProactively() {
+    if (!this.#shouldStopToCompact()) return;
+    const reserve = this.#outputReserve();
+    const warning =
+      `proactive-compaction: last prompt ~${this.lastInputTokens} tokens; ` +
+      `context window ${this.contextWindow}, reserve ${reserve}`;
+    this.agentWarnings.push(warning);
+    this.transcript.write("system", { content: warning });
+    this.#compactAgentHistory(this.agent.state.messages);
+  }
+
+  /**
+   * Replace history with a compacted copy and continue the current task.
+   * @param {string} stopReason
+   * @param {string} label short reason recorded in the warning
+   */
+  async #compactNow(stopReason, label) {
     try {
       await this.agent.waitForIdle();
     } catch {
@@ -408,7 +436,7 @@ export class AgentSession {
     const partialReasoning = lastAssistantReasoning(before);
     const compactedMsgs = compactMessages(before);
     this.compacted += 1;
-    const warning = `compaction:${this.compacted} after length at turn ${this.totalTurns}`;
+    const warning = `compaction:${this.compacted} (${label}) at turn ${this.totalTurns}`;
     this.agentWarnings.push(warning);
     this.transcript.write("system", { content: warning });
     const compactionText = buildCompactionUserMessage({
@@ -425,38 +453,75 @@ export class AgentSession {
     return true;
   }
 
+  async #maybeCompact() {
+    const stopReason = lastAssistantStopReason(this.agent?.state?.messages || []);
+    if (!isCompactionTrigger(stopReason)) return false;
+    if (this.#phaseBudgetExceeded()) {
+      this.agentWarnings.push("phase budget exceeded; skipping compaction");
+      return false;
+    }
+    if (this.maxTurnsPerPhase > 0 && this.phaseTurns >= this.maxTurnsPerPhase) return false;
+    return this.#compactNow(stopReason, "length");
+  }
+
+  /**
+   * Compact mid-phase when the prompt is approaching the context window but the
+   * provider did not emit a `length` stop (e.g. servers that reject an
+   * over-long request instead of truncating it).
+   */
+  async #maybeCompactOnProximity() {
+    if (!this.#shouldStopToCompact()) return false;
+    if (this.#phaseBudgetExceeded()) {
+      this.agentWarnings.push("phase budget exceeded; skipping proximity compaction");
+      return false;
+    }
+    if (this.maxTurnsPerPhase > 0 && this.phaseTurns >= this.maxTurnsPerPhase) return false;
+    if (this.proximityCompactions >= this.maxProximityCompactions) {
+      this.agentWarnings.push(`proximity-compaction cap (${this.maxProximityCompactions})`);
+      return false;
+    }
+    this.proximityCompactions += 1;
+    const stopReason = lastAssistantStopReason(this.agent?.state?.messages || []) || "proximity";
+    return this.#compactNow(stopReason, "context-proximity");
+  }
+
   async #recoverTurns(caughtError = null) {
     let retried = false;
     let error = caughtError;
-    while (await this.#maybeRetryAbort(error)) {
-      retried = true;
-      error = null;
-    }
-    while (await this.#maybeRetryRateLimit(error)) {
-      retried = true;
-      error = null;
-    }
-    while (await this.#maybeRetryContextOverflow(error)) {
-      retried = true;
-      error = null;
-    }
-    while (await this.#maybeRetryProviderError(error)) {
-      retried = true;
-      error = null;
-    }
-    while (await this.#maybeCompact()) {
-      while (await this.#maybeRetryAbort(null)) {
+    // Alternate recovery actions until none applies. Each action continues the
+    // agent loop; when it stops again we re-evaluate from the top.
+    for (let guard = 0; guard < 100; guard += 1) {
+      if (await this.#maybeRetryAbort(error)) {
         retried = true;
+        error = null;
+        continue;
       }
-      while (await this.#maybeRetryRateLimit(null)) {
+      if (await this.#maybeRetryRateLimit(error)) {
         retried = true;
+        error = null;
+        continue;
       }
-      while (await this.#maybeRetryContextOverflow(null)) {
+      if (await this.#maybeRetryContextOverflow(error)) {
         retried = true;
+        error = null;
+        continue;
       }
-      while (await this.#maybeRetryProviderError(null)) {
+      if (await this.#maybeRetryProviderError(error)) {
         retried = true;
+        error = null;
+        continue;
       }
+      if (await this.#maybeCompact()) {
+        retried = true;
+        error = null;
+        continue;
+      }
+      if (await this.#maybeCompactOnProximity()) {
+        retried = true;
+        error = null;
+        continue;
+      }
+      break;
     }
     return retried;
   }
@@ -532,6 +597,7 @@ export class AgentSession {
       turns: this.totalTurns,
       tokens: this.tokens,
       compacted: this.compacted,
+      proximityCompactions: this.proximityCompactions,
       lengthStops: this.lengthStops,
       abortRetries: this.abortRetries,
       rateLimitRetries: this.rateLimitRetries,

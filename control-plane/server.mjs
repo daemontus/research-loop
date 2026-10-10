@@ -161,6 +161,8 @@ export function startControlPlane(opts) {
     initialNote: opts.initialNote || "",
     skipSkills: opts.skipSkills || false,
     installedSkillsPath: opts.installedSkillsPath || null,
+    initialState: opts.initialState || null,
+    initialResearcherSteps: opts.initialResearcherSteps || 0,
   });
 
   const tailer = new TranscriptTailer(opts.transcriptDir, TRANSCRIPT_FILES);
@@ -310,7 +312,10 @@ export function startControlPlane(opts) {
     server.listen(port, host, () => {
       const actualPort = server.address().port;
       const url = `http://${urlHost}:${actualPort}/?token=${encodeURIComponent(opts.token)}`;
-      broker.start();
+      // View-only mode (e.g. --view a finished run) must not deliver the start
+      // message or touch agents; just seed the final state for display.
+      if (!opts.viewOnly) broker.start();
+      if (opts.seedState) broker.seed(opts.seedState);
       resolve({
         server,
         broker,

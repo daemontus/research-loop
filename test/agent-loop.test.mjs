@@ -370,4 +370,44 @@ describe("end-to-end loop (faux provider)", () => {
     const kinds = correction.messages.map((m) => m.kind);
     assert.ok(kinds.includes("prompt"));
   });
+
+  it("compacts mid-phase when the prompt approaches the context window", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rl-proximity-"));
+    const rFaux = makeFaux();
+    // Small window: the giant bash output below pushes the reported prompt size
+    // (input + cacheRead, per pi-ai's usage accounting) well past the reserve.
+    const model = { ...rFaux.model, contextWindow: 10000, maxTokens: 100 };
+    const researcher = makeSession({
+      role: "researcher",
+      tmp,
+      faux: rFaux.faux,
+      models: rFaux.models,
+      model,
+      responses: [
+        fauxAssistantMessage(
+          [fauxText("Dumping data."), fauxToolCall("bash", { command: "python3 -c \"print('x'*60000)\"" })],
+          { stopReason: "toolUse" },
+        ),
+        // A second ordinary tool turn so the proximity check runs *after* the big
+        // tool result has entered the prompt.
+        fauxAssistantMessage(
+          [fauxText("Inspecting."), fauxToolCall("read_file", { path: "notes.md" })],
+          { stopReason: "toolUse" },
+        ),
+        planResponse("G1"),
+      ],
+    });
+    await researcher.start();
+    const { error } = await researcher.runPrompt("start");
+    assert.equal(error, null, "should recover by compacting, not fail");
+    const handoff = researcher.takeHandoff();
+    assert.ok(handoff, "should still produce a handoff after compaction");
+    assert.equal(handoff.kind, "proposal");
+    const stats = researcher.stats();
+    assert.equal(stats.proximityCompactions, 1, "should compact once");
+    assert.ok(
+      stats.warnings.some((w) => w.startsWith("compaction:")),
+      "should record a compaction warning",
+    );
+  });
 });
