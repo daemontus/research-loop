@@ -24,7 +24,14 @@ const IMAGE_MIME = {
 };
 
 export function resolveInSandbox(sandbox, p) {
-  const raw = path.isAbsolute(p) ? String(p) : normalizeSandboxPath(p);
+  const str = String(p);
+  // Map the in-container "/sandbox" prefix onto the real sandbox dir (as reads do).
+  const raw =
+    str === "/sandbox" || str === "/sandbox/"
+      ? "."
+      : path.isAbsolute(str) && !str.startsWith("/sandbox/")
+        ? str
+        : normalizeSandboxPath(str);
   const abs = path.isAbsolute(raw) ? raw : path.join(sandbox, raw);
   const rel = path.relative(sandbox, abs);
   if (rel.startsWith("..") || path.isAbsolute(rel)) {
@@ -85,7 +92,7 @@ function editFile(sandbox, p, oldString, newString, replaceAll) {
   }
   const updated = replaceAll
     ? content.split(oldString).join(newString)
-    : content.replace(oldString, newString);
+    : content.replace(oldString, () => newString);
   fs.writeFileSync(abs, updated);
   return `edited ${p} (${occurrences} replacement${occurrences === 1 ? "" : "s"})`;
 }

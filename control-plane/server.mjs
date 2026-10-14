@@ -15,6 +15,7 @@ import { createBroker } from "./broker.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UI_PATH = path.join(__dirname, "ui", "index.html");
+const VENDOR_PATH = path.join(__dirname, "ui", "vendor");
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -205,6 +206,25 @@ export function startControlPlane(opts) {
         return;
       }
 
+      // Vendored third-party UI assets (e.g. the CommonMark renderer): served
+      // unauthenticated like the page itself, strict path-traversal check.
+      if (route.startsWith("GET /vendor/")) {
+        const name = path.basename(decodeURIComponent(url.pathname.slice("/vendor/".length)));
+        if (!name || name !== url.pathname.slice("/vendor/".length)) {
+          sendJson(res, 400, { ok: false, error: "bad vendor path" });
+          return;
+        }
+        const file = path.join(VENDOR_PATH, name);
+        if (name.includes("/") || name.includes("\\") || !fs.existsSync(file) || path.dirname(file) !== path.resolve(VENDOR_PATH)) {
+          sendJson(res, 404, { ok: false, error: `not found: ${route}` });
+          return;
+        }
+        const ct = name.endsWith(".js") ? "text/javascript; charset=utf-8" : "application/octet-stream";
+        res.writeHead(200, { "content-type": ct });
+        res.end(fs.readFileSync(file));
+        return;
+      }
+
       if (!authed(req, url)) {
         sendJson(res, 401, { ok: false, error: "invalid session token" });
         return;
@@ -223,6 +243,11 @@ export function startControlPlane(opts) {
           text = "";
         }
         sendJson(res, 200, { ok: true, goals: text });
+        return;
+      }
+
+      if (route === "GET /api/task") {
+        sendJson(res, 200, { ok: true, task: opts.task ?? "" });
         return;
       }
 
@@ -275,6 +300,20 @@ export function startControlPlane(opts) {
         return;
       }
 
+      // Live, in-progress assistant output for the UI. Relayed to SSE clients
+      // only; never persisted (the finished message lands in the transcript).
+      if (route === "POST /api/partial") {
+        const body = JSON.parse((await readBody(req)) || "{}");
+        if (body.role !== "researcher" && body.role !== "advisor") {
+          sendJson(res, 400, { ok: false, error: `invalid role: ${body.role}` });
+          return;
+        }
+        const ops = Array.isArray(body.ops) ? body.ops : [];
+        if (ops.length) broadcastSse({ type: "partial", agent: body.role, ops });
+        sendJson(res, 200, { ok: true });
+        return;
+      }
+
       if (route === "POST /api/event") {
         const body = JSON.parse((await readBody(req)) || "{}");
         broker.events.emit("agent-event", body);
@@ -316,6 +355,7 @@ export function startControlPlane(opts) {
       // message or touch agents; just seed the final state for display.
       if (!opts.viewOnly) broker.start();
       if (opts.seedState) broker.seed(opts.seedState);
+      const extraServers = [];
       resolve({
         server,
         broker,
@@ -323,8 +363,24 @@ export function startControlPlane(opts) {
         port: actualPort,
         url,
         tailer,
+        /**
+         * Also serve on another local address (same port, same handler), e.g.
+         * the Docker bridge gateway so Linux containers can reach a
+         * loopback-bound control plane.
+         */
+        listenAlso(extraHost) {
+          return new Promise((res, rej) => {
+            const extra = http.createServer(server.listeners("request")[0]);
+            extra.once("error", rej);
+            extra.listen(actualPort, extraHost, () => {
+              extraServers.push(extra);
+              res();
+            });
+          });
+        },
         close() {
           tailer.stop();
+          for (const extra of extraServers) extra.close();
           for (const res of sseClients) {
             try {
               res.end();

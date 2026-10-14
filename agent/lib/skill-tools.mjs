@@ -73,7 +73,7 @@ function slugify(value) {
   const slug = String(value)
     .toLowerCase()
     .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
+    .replace(/^[-.]+|-+$/g, "")
     .slice(0, 64);
   return slug || "skill";
 }

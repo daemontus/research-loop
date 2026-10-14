@@ -101,7 +101,11 @@ sandbox (`runs/<id>/transcripts/{researcher,advisor}.jsonl`), and the control
 plane records `session.jsonl`. The WebUI (`http://127.0.0.1:<port>/?token=...`)
 has three panes:
 
-- **Transcript** (left) — the full, chronological transcript. It always shows
+- **Task / Goals** (left) — the task text plus the researcher's `GOALS.md`,
+  rendered from Markdown to HTML with a standard CommonMark parser (vendored
+  `marked` + `DOMPurify` under `control-plane/ui/vendor/`; regenerate with
+  `npm run vendor:ui`).
+- **Transcript** (middle) — the full, chronological transcript. It always shows
   the complete history: on (re)connect the server replays every entry read from
   disk, sorted by time, then streams live updates over SSE. Message content is
   collapsed to 5 lines with a "Show more" toggle; reasoning and tool-call
@@ -109,12 +113,19 @@ has three panes:
   required changes, feedback, ...) render as structured fields rather than raw
   JSON. A search box filters entries by text; the left/right side panels can be
   resized by dragging the dividers.
-- **Overview** (middle) — one clickable item per high-level phase (plan
+- **Overview** (right) — one clickable item per high-level phase (plan
   proposed/approved/changed, result submitted/accepted/changed, task completion,
   human decisions). Clicking scrolls the transcript to that phase and highlights
   it; the current phase is highlighted as you scroll.
-- **Goals** (right) — the researcher's `GOALS.md`, rendered from Markdown to
-  HTML.
+
+While an agent is generating, its thinking and response stream into a dashed
+"streaming" preview bubble as tokens arrive from the provider (tool calls show
+as "→ calling <tool>…"). The preview is replaced by the finished message once it
+lands in the transcript. Streaming is display-only: agents batch deltas every
+~250 ms to `POST /api/partial`, the control plane relays them over SSE and never
+writes them to disk, so transcripts, resume and stats are unaffected. Reloading
+the page mid-message drops that message's preview (the finished message still
+appears). Providers that do not stream show the text in one or a few chunks.
 
 The header shows live totals (handoffs, tokens consumed, who the state machine
 expects to act next) and a per-agent **liveness** indicator ("active", "idle
@@ -127,6 +138,13 @@ and/or `--port <n>` to change the bind address and port. All `/api/*` endpoints
 (including the transcript stream and progress) require the session token, which
 the orchestrator includes in the URL it opens (`/?token=...`); it is not embedded
 in the served page.
+
+Docker on Linux: containers reach the host via `host.docker.internal`, which on
+Linux is the Docker bridge gateway (typically `172.17.0.1`), not loopback. With a
+loopback `--host` the orchestrator therefore also listens on the bridge gateway
+address (same port). If that fails (e.g. rootless Docker or a custom network), it
+prints a warning; use `--host 0.0.0.0` instead. The same applies to an LLM
+provider on `localhost`: it must listen on an address the containers can reach.
 
 ## Quick start
 
@@ -152,6 +170,44 @@ node orchestrator/run.mjs --task "..." \
 
 Open the printed UI URL to watch and to approve completion.
 
+### Batteries-included agent image (toolbox)
+
+The default agent image is deliberately slim: agents fetch extra tooling at
+runtime with their passwordless sudo, but every run starts from a fresh
+container, so commonly-used toolchains get reinstalled over and over. To bake
+them in, build an alternative image from the same `Dockerfile.agent` by enabling
+optional build args:
+
+```bash
+docker build -f Dockerfile.agent \
+  --build-arg INSTALL_RUST=1 \
+  --build-arg INSTALL_UV=1 \
+  --build-arg INSTALL_LATEX=1 \
+  -t research-loop-agent-toolbox:latest .
+```
+
+Each arg is an independent opt-in (default `0`); combine the ones you want:
+
+| Build arg | Default | Adds |
+|---|---|---|
+| `INSTALL_RUST` | `0` | Rust toolchain via rustup (stable, minimal) — `rustc`/`cargo` on PATH, tools under `/opt/rustup` + `/opt/cargo` |
+| `INSTALL_UV` | `0` | `uv` (Python toolchain manager) in the agent's home, plus pre-installed CPython 3.11 and 3.12 so `uv venv`/`uv run` don't re-download them |
+| `INSTALL_LATEX` | `0` | light TeX Live toolbox: `pdflatex`, common formats/fonts, TikZ/pgf (`texlive-pictures`), and `latexmk` |
+
+Then point your runs at it with `--image`:
+
+```bash
+node orchestrator/run.mjs --task "..." \
+  --image research-loop-agent-toolbox:latest \
+  --researcher-model einfra:qwen3.8-27b \
+  --advisor-model einfra:deepseek-v4-flash
+```
+
+The image is used for **both** roles (researcher and advisor). Everything is
+installed under directories owned by the non-root `agent` user and stays on
+PATH for its login shells and `sudo`, so agents can still install anything extra
+per task (and can even update the bundled Rust/uv at runtime).
+
 ### Orchestrator flags
 
 | Flag | Default | Description |
@@ -170,7 +226,7 @@ Open the printed UI URL to watch and to approve completion.
 | `--no-model-discovery` | off | skip querying the provider's `/models` for context/output limits |
 | `--researcher-context-window` / `--advisor-context-window` | discovered/config | override a model's context window |
 | `--researcher-max-tokens` / `--advisor-max-tokens` | discovered/config | override a model's maximum output tokens |
-| `--max-handoffs` | 200 | abort after this many researcher goal steps (proposals + results) |
+| `--max-handoffs` | 0 (unlimited) | abort after this many researcher goal steps (proposals + results); set a value to enforce |
 | `--wallclock-ms` | 0 | overall wall-clock budget (`0` = disabled) |
 | `--max-turns-per-phase` | 1000 | agent turns allowed per phase (`0` = unlimited) |
 | `--abort-timeout-ms` | 0 | per-attempt window before an in-flight turn is aborted and retried (`0` = disabled) |
@@ -182,7 +238,7 @@ Open the printed UI URL to watch and to approve completion.
 | `--resume <id\|dir>` | — | resume an interrupted session (see below) |
 | `--resume-prompt <text>` | — | extra instructions injected into the resume prompt |
 | `--view <id\|dir>` | — | open the WebUI for a finished run, no agents |
-| `--print-jobs` | off | print the container job JSON and exit |
+| `--print-jobs` | off | print the agent job JSON (secrets redacted) and exit |
 
 ## Seeding the researcher sandbox
 
@@ -299,9 +355,10 @@ Providers use the same format as `biodivine-model-sniffer/pi_config.json`:
 }
 ```
 
-Credentials are resolved from (in order) the provider's `apiKeyEnv`, built-in
-provider env vars (e.g. `OPENAI_API_KEY`), then `~/.pi/agent/auth.json`
-(or `PI_AUTH_FILE` / `PI_AUTH_PATH`). `localhost` base URLs are rewritten to
+Every model's provider must have an entry in `pi_config.json` (an env var alone
+is not enough). Its key is resolved from (in order) the provider's `apiKeyEnv`,
+the conventional env var for that provider id (e.g. `OPENAI_API_KEY` for an
+`openai` entry), then `~/.pi/agent/auth.json` (or `PI_AUTH_FILE` / `PI_AUTH_PATH`). `localhost` base URLs are rewritten to
 `host.docker.internal` for Docker runs.
 
 ## Repository layout
@@ -322,6 +379,7 @@ agent/
     workspace-paths.mjs    # sandbox/config/prefetch/extra-root resolution
     skills.mjs             # skill index loader
     broker-client.mjs      # HTTP long-poll client
+    partial-stream.mjs     # live thinking/text streaming to the WebUI
 control-plane/
   server.mjs               # HTTP + SSE + static UI
   broker.mjs               # inboxes, routing, session logging
@@ -362,14 +420,17 @@ pi-ai's `fauxProvider`, with no network access.
 ## Troubleshooting
 
 - **`Provider is not configured` / session aborts immediately.** The selected
-  model's provider had no usable credential. `pi_config.json` providers need
-  their `apiKeyEnv` set (e.g. `OLLAMA_EINFRA_API_KEY`), a built-in provider env
-  var, or an entry in `~/.pi/agent/auth.json`. The orchestrator fails at startup
+  model's provider had no usable credential. The provider must be listed in
+  `pi_config.json`, and its key must come from its `apiKeyEnv` (e.g.
+  `OLLAMA_EINFRA_API_KEY`), the conventional env var for that provider id, or
+  an entry in `~/.pi/agent/auth.json`. The orchestrator fails at startup
   if it cannot resolve a key; the container also refuses to start without one.
 - **A phase produces no handoff.** The harness nudges the model up to 3 times to
   end its turn with a control tool; if it still fails, or the provider errors,
   the agent exits non-zero and the orchestrator aborts the session with the
-  reason — it never waits forever.
+  reason — it never waits forever. Any agent process/container exit before the
+  session ends (whatever the exit code) aborts the run; a slow agent is never
+  timed out as long as its process is alive.
 - **Ctrl-C.** Interrupting the orchestrator aborts the session and stops both
   containers.
 
@@ -389,8 +450,10 @@ so the loop resumes in whatever state it was in (plan review, result review,
 awaiting human, ...) and the resume prompt is delivered to the agent expected to
 act. The prompt always warns the agent that its container/environment was rebuilt
 from scratch and it must reconstitute installed tooling, re-read GOALS.md and its
-notes, and *continue* (not restart) the task. `--resume` requires no `--task`
-when the run's `session.json` already records one (flags override it).
+notes, and *continue* (not restart) the task. The task, models and
+`--skip-skills` of the original run are restored from `run.json` (written at
+startup), `session.json` (written on a clean exit), or, for older runs, the task
+from the session log; flags override them.
 
 To review a finished run without starting containers:
 
@@ -409,7 +472,7 @@ Long sessions are protected against the common derail modes:
   and `maxRetryDelayMs` (60s), so transient 5xx/408/network errors are retried by
   pi-ai instead of aborting the run.
 - **Turn-level recovery**: aborted turns, HTTP 429, and context-overflow `400`s
-  trim to the last consistent point, compact, and continue (bounded).
+  trim to the last consistent point, compact, and continue (bounded per phase).
 - **Compaction reclaims file bodies**: older tool-call arguments (e.g.
   `write_file` content) are truncated, in addition to stripping tool output and
   stale reasoning.
@@ -424,7 +487,7 @@ Long sessions are protected against the common derail modes:
   rejections are also recognized as context overflow and recovered rather than
   retried as transient errors.
 - **Timeouts are optional and off by default.** By default a run is only bounded
-  by progress (`--max-handoffs`) and the rejection cap, so long sessions keep
+  by progress (`--max-handoffs`) and the cap on consecutive invalid handoffs, so long sessions keep
   going; monitor them live in the WebUI. Set `--abort-timeout-ms` (per-attempt),
   `--phase-timeout-ms` (hard per-phase), or `--wallclock-ms` (overall) to a
   positive value to re-enable a bound.

@@ -64,6 +64,23 @@ export function runContainer({
   return child;
 }
 
+/**
+ * Gateway IP of Docker's default bridge network (what `host-gateway` resolves
+ * to on Linux), or null if it cannot be determined.
+ */
+export function dockerBridgeGateway() {
+  const proc = spawnSync(
+    "docker",
+    ["network", "inspect", "bridge", "--format", "{{range .IPAM.Config}}{{.Gateway}} {{end}}"],
+    { encoding: "utf8" },
+  );
+  if (proc.status !== 0) return null;
+  const ip = String(proc.stdout || "")
+    .split(/\s+/)
+    .find((s) => /^\d+\.\d+\.\d+\.\d+$/.test(s));
+  return ip || null;
+}
+
 export function stopContainer(name) {
   spawnSync("docker", ["stop", "-t", "5", name], { stdio: "ignore" });
 }

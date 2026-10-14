@@ -24,6 +24,7 @@ import path from "node:path";
 
 import { AgentSession } from "./lib/agent-runner.mjs";
 import { createBrokerClient } from "./lib/broker-client.mjs";
+import { createPartialStreamer } from "./lib/partial-stream.mjs";
 import { bindControlTools, advisorControlToolDefs, researcherControlToolDefs } from "./lib/control-tools.mjs";
 import { modelSupportsImages } from "./lib/model-capabilities.mjs";
 import { buildModels, resolveModel, assertProviderConfigured } from "./lib/model-providers.mjs";
@@ -46,7 +47,11 @@ function readJobFromStdin() {
 
 async function loadJob() {
   if (process.env.RESEARCH_LOOP_JOB) {
-    return JSON.parse(process.env.RESEARCH_LOOP_JOB);
+    const job = JSON.parse(process.env.RESEARCH_LOOP_JOB);
+    // The job carries the session token and API keys; keep it out of the
+    // environment inherited by agent-spawned shells.
+    delete process.env.RESEARCH_LOOP_JOB;
+    return job;
   }
   const raw = await readJobFromStdin();
   if (!raw.trim()) throw new Error("no job on stdin (and RESEARCH_LOOP_JOB is unset)");
@@ -183,22 +188,13 @@ async function main() {
   });
   await broker.register();
   await broker.event("registered", { role, model: job.model });
+  // Stream in-progress thinking/text to the WebUI as it arrives.
+  session.partialStreamer = createPartialStreamer((ops) => broker.partial(ops));
   log(`registered with broker at ${job.brokerUrl}`);
 
   let cursor = 0;
   let done = false;
 
-  const CONTROL_TOOLS_BY_ROLE = {
-    researcher: ["submit_plan", "submit_result", "request_task_completion"],
-    advisor: [
-      "approve_plan",
-      "request_plan_changes",
-      "accept_result",
-      "request_result_changes",
-      "accept_task_completion",
-      "request_task_changes",
-    ],
-  };
 
   const sendHandoff = async (handoff) => {
     transcript.write("handoff", {
@@ -248,7 +244,7 @@ async function main() {
       const correction = [
         `Your previous turn ended without a handoff (stopReason=${first.stopReason}).`,
         "Every phase MUST end by calling exactly one control tool:",
-        ...CONTROL_TOOLS_BY_ROLE[role].map((t) => `  - ${t}`),
+        ...controlDefs.map((d) => `  - ${d.name}`),
         "Continue from where you are and call the appropriate control tool now.",
       ].join("\n");
       const next = await session.runPrompt(correction);

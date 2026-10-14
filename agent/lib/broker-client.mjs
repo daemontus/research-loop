@@ -63,6 +63,19 @@ export function createBrokerClient({ brokerUrl, role, token }) {
       return res.json();
     },
 
+    /** Best-effort live output for the WebUI (not persisted, never throws). */
+    async partial(ops) {
+      try {
+        return await jsonFetch(`${base}/api/partial`, {
+          method: "POST",
+          body: JSON.stringify({ role, ops }),
+          signal: AbortSignal.timeout(5000),
+        });
+      } catch {
+        return null;
+      }
+    },
+
     async event(type, payload = {}) {
       try {
         return await jsonFetch(`${base}/api/event`, {

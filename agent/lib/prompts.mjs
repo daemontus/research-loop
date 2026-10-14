@@ -59,7 +59,7 @@ export function buildResearcherPrompt({
     "plan before you execute it and every result before a goal is considered met. The advisor",
     "is the sole authority on whether a goal is met.",
     "",
-    task ? `## Broad research task\n${task}\n` : "",
+    task ? `## Broad research task\n${task}\n` : null,
     workspaceSection("researcher"),
     "",
     "## Turn-taking protocol (mandatory)",
@@ -144,13 +144,14 @@ export function buildResearcherPrompt({
     GOALS_FORMAT,
     "",
     "## Skills and tools",
-    toolsMd ? `Installed tools / conventions:\n${toolsMd}` : "",
-    renderSkillsSection({ skillsReadme, skillEntries }),
+    toolsMd ? `Installed tools / conventions:\n${toolsMd}` : null,
+    renderSkillsSection({ skillsReadme, skillEntries }) || null,
     !supportsImage
       ? "This model is text-only: read_image is unavailable. Use bash, read_file, and text tools."
-      : "",
+      : null,
   ]
-    .filter((line) => line != null && line !== "")
+    // Drop only omitted optional pieces; "" entries are intentional blank lines.
+    .filter((line) => line != null)
     .join("\n");
 }
 
@@ -166,7 +167,7 @@ export function buildAdvisorPrompt({
     "plans before execution and verify results before a goal is considered met. You are the sole",
     "authority on whether a goal is met, and you recommend task completion to the human.",
     "",
-    task ? `## Broad research task\n${task}\n` : "",
+    task ? `## Broad research task\n${task}\n` : null,
     workspaceSection("advisor"),
     "",
     "## Standards",
@@ -235,13 +236,14 @@ export function buildAdvisorPrompt({
     GOALS_FORMAT,
     "",
     "## Skills and tools",
-    toolsMd ? `Installed tools / conventions:\n${toolsMd}` : "",
-    renderSkillsSection({ skillsReadme, skillEntries }),
+    toolsMd ? `Installed tools / conventions:\n${toolsMd}` : null,
+    renderSkillsSection({ skillsReadme, skillEntries }) || null,
     !supportsImage
       ? "This model is text-only: read_image is unavailable. Use bash, read_file, and text tools."
-      : "",
+      : null,
   ]
-    .filter((line) => line != null && line !== "")
+    // Drop only omitted optional pieces; "" entries are intentional blank lines.
+    .filter((line) => line != null)
     .join("\n");
 }
 

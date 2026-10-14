@@ -28,6 +28,7 @@ import {
 import { hasUnlimitedMaxTokens, stripMaxTokensOnPayload } from "./model-providers.mjs";
 import fs from "node:fs";
 import path from "node:path";
+import { streamAgentEvent } from "./partial-stream.mjs";
 
 const DEFAULT_MAX_ABORT_RETRIES = 5;
 const DEFAULT_MAX_RATE_LIMIT_RETRIES = 10;
@@ -61,6 +62,10 @@ function lastAssistantText(messages) {
  * @param {number} [opts.maxTurnsPerPhase]
  * @param {number} [opts.abortTimeoutMs]
  */
+function newPhaseRetries() {
+  return { abort: 0, rateLimit: 0, contextOverflow: 0, providerError: 0, proximity: 0 };
+}
+
 export class AgentSession {
   constructor(opts) {
     this.role = opts.role;
@@ -71,6 +76,8 @@ export class AgentSession {
     this.sandbox = opts.sandbox;
     this.goalsPath = opts.goalsPath || null;
     this.transcript = opts.transcript;
+    // Optional live display of in-progress output (see partial-stream.mjs).
+    this.partialStreamer = opts.partialStreamer || null;
     this.thinkingLevel = opts.thinkingLevel || "off";
     // 0 = unlimited turns per phase.
     this.maxTurnsPerPhase = opts.maxTurnsPerPhase ?? 1000;
@@ -110,6 +117,8 @@ export class AgentSession {
     this.contextOverflowRetries = 0;
     this.providerErrorRetries = 0;
     this.proximityCompactions = 0;
+    // Retry/compaction caps apply per phase; the totals above are for stats.
+    this.phaseRetries = newPhaseRetries();
     this.agentWarnings = [];
     this.tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 };
 
@@ -162,6 +171,7 @@ export class AgentSession {
   wire(agent) {
     const session = this;
     agent.subscribe((event) => {
+      streamAgentEvent(session.partialStreamer, event);
       if (event.type === "turn_start") {
         session.phaseTurns += 1;
         session.totalTurns += 1;
@@ -231,7 +241,7 @@ export class AgentSession {
       return false;
     }
     if (this.maxTurnsPerPhase > 0 && this.phaseTurns >= this.maxTurnsPerPhase) return false;
-    if (this.abortRetries >= this.maxAbortRetries) {
+    if (this.phaseRetries.abort >= this.maxAbortRetries) {
       this.agentWarnings.push(`abort retry cap (${this.maxAbortRetries})`);
       return false;
     }
@@ -246,6 +256,7 @@ export class AgentSession {
       return false;
     }
     this.abortRetries += 1;
+    this.phaseRetries.abort += 1;
     const warning = `abort-retry:${this.abortRetries} at turn ${this.totalTurns}`;
     this.agentWarnings.push(warning);
     this.transcript.write("system", { content: warning });
@@ -261,7 +272,7 @@ export class AgentSession {
       return false;
     }
     if (this.maxTurnsPerPhase > 0 && this.phaseTurns >= this.maxTurnsPerPhase) return false;
-    if (this.rateLimitRetries >= this.maxRateLimitRetries) {
+    if (this.phaseRetries.rateLimit >= this.maxRateLimitRetries) {
       this.agentWarnings.push(`rate-limit retry cap (${this.maxRateLimitRetries})`);
       return false;
     }
@@ -276,6 +287,7 @@ export class AgentSession {
       return false;
     }
     this.rateLimitRetries += 1;
+    this.phaseRetries.rateLimit += 1;
     const waitMs = this.rateLimitBackoffMs;
     const warning =
       `rate-limit-retry:${this.rateLimitRetries} after HTTP 429 at turn ${this.totalTurns}` +
@@ -326,7 +338,7 @@ export class AgentSession {
       this.agentWarnings.push("phase budget exceeded; skipping context-overflow retry");
       return false;
     }
-    if (this.contextOverflowRetries >= this.maxContextOverflowRetries) {
+    if (this.phaseRetries.contextOverflow >= this.maxContextOverflowRetries) {
       this.agentWarnings.push(`context-overflow retry cap (${this.maxContextOverflowRetries})`);
       return false;
     }
@@ -341,6 +353,7 @@ export class AgentSession {
       return false;
     }
     this.contextOverflowRetries += 1;
+    this.phaseRetries.contextOverflow += 1;
     const warning =
       `context-overflow-retry:${this.contextOverflowRetries} at turn ${this.totalTurns}; ` +
       "compacting history";
@@ -365,7 +378,7 @@ export class AgentSession {
       return false;
     }
     if (this.maxTurnsPerPhase > 0 && this.phaseTurns >= this.maxTurnsPerPhase) return false;
-    if (this.providerErrorRetries >= this.maxProviderErrorRetries) {
+    if (this.phaseRetries.providerError >= this.maxProviderErrorRetries) {
       this.agentWarnings.push(`provider-error retry cap (${this.maxProviderErrorRetries})`);
       return false;
     }
@@ -380,6 +393,7 @@ export class AgentSession {
       return false;
     }
     this.providerErrorRetries += 1;
+    this.phaseRetries.providerError += 1;
     const detail = lastAssistantErrorDetail(this.agent.state.messages)?.errorMessage || "unknown";
     const waitMs = this.providerErrorBackoffMs;
     const warning =
@@ -476,11 +490,12 @@ export class AgentSession {
       return false;
     }
     if (this.maxTurnsPerPhase > 0 && this.phaseTurns >= this.maxTurnsPerPhase) return false;
-    if (this.proximityCompactions >= this.maxProximityCompactions) {
+    if (this.phaseRetries.proximity >= this.maxProximityCompactions) {
       this.agentWarnings.push(`proximity-compaction cap (${this.maxProximityCompactions})`);
       return false;
     }
     this.proximityCompactions += 1;
+    this.phaseRetries.proximity += 1;
     const stopReason = lastAssistantStopReason(this.agent?.state?.messages || []) || "proximity";
     return this.#compactNow(stopReason, "context-proximity");
   }
@@ -532,6 +547,7 @@ export class AgentSession {
    */
   async runPrompt(text) {
     this.phaseTurns = 0;
+    this.phaseRetries = newPhaseRetries();
     this.controlState.pendingHandoff = null;
     this.phaseStart = Date.now();
     this.#maybeCompactProactively();

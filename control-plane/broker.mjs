@@ -312,6 +312,8 @@ export function createBroker({
       return { ok: false, error: result.error, state: state.state };
     }
     state = result.state;
+    // The cap bounds *consecutive* invalid handoffs; any accepted one is progress.
+    rejections = 0;
     if (role === "researcher" && (envelope.kind === "proposal" || envelope.kind === "result")) {
       researcherSteps += 1;
     }
@@ -373,11 +375,11 @@ export function createBroker({
       deliver(role, {
         role: "control",
         kind: "prompt",
-        text: `Too many invalid handoffs (${rejections}); aborting. Last error: ${error}`,
+        text: `Too many consecutive invalid handoffs (${rejections}); aborting. Last error: ${error}`,
         payload: {},
         ts: Date.now(),
       });
-      abort(`too many invalid handoffs (${rejections})`);
+      abort(`too many consecutive invalid handoffs (${rejections})`);
       return;
     }
     const expected = expectedForState(state.state);
@@ -446,6 +448,8 @@ export function createBroker({
 
   function abort(reason) {
     if (closed) return;
+    // Agents may exit non-zero while being stopped after approval; keep DONE.
+    if (state.state === STATES.DONE) return complete();
     closed = true;
     const result = markAborted(state, reason);
     state = result.state;

@@ -75,10 +75,12 @@
       }
       .latest[hidden] { display: none !important; }
       aside {
-        width: 380px; border-left: 1px solid var(--border); background: var(--panel);
-        display: flex; flex-direction: column; min-height: 0; flex: none; min-width: 200px;
+        width: 380px; border-right: 1px solid var(--border); background: var(--panel);
+        display: flex; flex-direction: column; min-height: 0; flex: none; min-width: 240px;
       }
-      aside .side-head { padding: 10px 14px; border-bottom: 1px solid var(--border); font-weight: 600; }
+      aside .side-head { padding: 10px 14px; border-bottom: 1px solid var(--border); font-weight: 600; flex: none; }
+      #pane-scroll { flex: 1; overflow-y: auto; }
+      #task { padding: 12px 14px; border-bottom: 1px solid var(--border); font-size: 13px; line-height: 1.55; }
       #overview-wrap {
         width: 300px; border-left: 1px solid var(--border); background: var(--panel);
         display: flex; flex-direction: column; min-height: 0; flex: none; min-width: 180px;
@@ -110,7 +112,7 @@
       .ov-item .ov-label { display: block; font-size: 12px; margin-top: 2px; }
       .ov-item .ov-goal { color: var(--muted); }
       .entry.flash .bubble { outline: 2px solid #f5a623; outline-offset: 1px; }
-      #goals { flex: 1; overflow-y: auto; padding: 12px 14px; font-size: 13px; line-height: 1.55; color: var(--text); }
+      #goals { padding: 12px 14px; font-size: 13px; line-height: 1.55; color: var(--text); }
       #goals .muted-note { color: var(--muted); font: 12px/1.5 var(--mono); }
       #goals h1 { font-size: 16px; margin: 4px 0 8px; }
       #goals h2 { font-size: 14px; margin: 14px 0 6px; border-bottom: 1px solid var(--border); padding-bottom: 3px; }
@@ -146,6 +148,15 @@
       .entry.handoff .bubble { background: var(--panel2); font-family: var(--mono); font-size: 12px; }
       .entry.tool .bubble { background: #10141b; font-family: var(--mono); font-size: 12px; color: #a7b1c2; }
       .entry .role { font-size: 11px; color: var(--muted); }
+      .entry.streaming .bubble { border-style: dashed; }
+      .entry.streaming .meta .pulse::before { content: "●"; margin-right: 4px; color: #f5a623; animation: pulse 1.2s ease-in-out infinite; }
+      @keyframes pulse { 50% { opacity: .25; } }
+      .stream-thinking {
+        margin: 0; max-height: 12em; overflow-y: auto; color: var(--muted); font-style: italic;
+      }
+      .stream-thinking:empty, .stream-text:empty, .stream-tools:empty { display: none; }
+      .stream-thinking:not(:empty) + .stream-text:not(:empty) { margin-top: 8px; }
+      .stream-tools { margin-top: 6px; font: 12px var(--mono); color: var(--muted); }
       details { margin-top: 6px; }
       summary { cursor: pointer; color: var(--muted); font-size: 12px; }
       pre { margin: 6px 0 0; white-space: pre-wrap; word-break: break-word; font-family: var(--mono); font-size: 12px; }
@@ -204,19 +215,12 @@
       </span>
     </header>
     <main>
-      <div id="timeline-wrap">
-        <div id="timeline"></div>
-        <button id="latest" class="latest" type="button" hidden>↓ latest</button>
-      </div>
-      <div class="divider" id="resize-overview" title="Drag to resize"></div>
-      <section id="overview-wrap">
-        <div class="side-head">Overview</div>
-        <div id="overview"></div>
-      </section>
-      <div class="divider" id="resize-goals" title="Drag to resize"></div>
       <aside id="goals-pane">
-        <div class="side-head">Goals</div>
-        <div id="goals"><div class="muted-note">(not yet written)</div></div>
+        <div class="side-head">Task / Goals</div>
+        <div id="pane-scroll">
+          <div id="task"><div class="muted-note">(loading…)</div></div>
+          <div id="goals"><div class="muted-note">(not yet written)</div></div>
+        </div>
         <div id="approval">
           <div class="row"><b>Task completion requires your approval.</b></div>
           <textarea id="approval-note" placeholder="Optional note to the agents…"></textarea>
@@ -235,8 +239,20 @@
           <button onclick="sendHumanMessage()">Send</button>
         </div>
       </aside>
+      <div class="divider" id="resize-goals" title="Drag to resize"></div>
+      <div id="timeline-wrap">
+        <div id="timeline"></div>
+        <button id="latest" class="latest" type="button" hidden>↓ latest</button>
+      </div>
+      <div class="divider" id="resize-overview" title="Drag to resize"></div>
+      <section id="overview-wrap">
+        <div class="side-head">Overview</div>
+        <div id="overview"></div>
+      </section>
     </main>
 
+    <script src="/vendor/marked.umd.js"></script>
+    <script src="/vendor/purify.min.js"></script>
     <script>
       const TOKEN = new URLSearchParams(location.search).get("token") || "";
       const timeline = document.getElementById("timeline");
@@ -472,38 +488,33 @@
         }
       }
 
-      // --- minimal, HTML-escaping markdown renderer for GOALS.md -------------
-      function inlineMd(s) {
-        return s
-          .replace(/`([^`]+)`/g, (_, c) => `<code>${c}</code>`)
-          .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-          .replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>")
-          .replace(
-            /\[([^\]]+)\]\((https?:[^)\s]+)\)/g,
-            '<a href="$2" target="_blank" rel="noreferrer">$1</a>',
-          );
-      }
-
-      function mdToHtml(md) {
+      // --- CommonMark rendering (marked) + sanitization (DOMPurify) ---------
+      // Fallback for sessions whose control-plane process predates the
+      // /vendor/ route: keep rendering even when the standard libs are absent.
+      function renderMarkdownFallback(md) {
         const lines = String(md || "").replace(/\r\n?/g, "\n").split("\n");
         const out = [];
         let i = 0;
         let list = null;
         const para = [];
+        const inner = (s) =>
+          s
+            .replace(/`([^`]+)`/g, (_, c) => `<code>${c}</code>`)
+            .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+            .replace(
+              /\[([^\]]+)\]\((https?:[^)\s]+)\)/g,
+              '<a href="$2" target="_blank" rel="noreferrer">$1</a>',
+            );
         const flushPara = () => {
           if (para.length) {
-            out.push(`<p>${inlineMd(esc(para.join(" ")))}</p>`);
+            out.push(`<p>${inner(esc(para.join(" ")))}</p>`);
             para.length = 0;
           }
         };
         const flushList = () => {
           if (!list) return;
           const tag = list.type;
-          out.push(
-            `<${tag}>${list.items
-              .map((it) => `<li class="d${it.depth}">${it.html}</li>`)
-              .join("")}</${tag}>`,
-          );
+          out.push(`<${tag}>${list.items.map((it) => `<li>${it.html}</li>`).join("")}</${tag}>`);
           list = null;
         };
         while (i < lines.length) {
@@ -533,36 +544,19 @@
           if (h) {
             flushPara();
             flushList();
-            const lvl = h[1].length;
-            out.push(`<h${lvl}>${inlineMd(esc(h[2].trim()))}</h${lvl}>`);
-            i += 1;
-            continue;
-          }
-          if (/^\s*([-*_])\1{2,}\s*$/.test(line)) {
-            flushPara();
-            flushList();
-            out.push("<hr>");
-            i += 1;
-            continue;
-          }
-          const bq = line.match(/^\s*>\s?(.*)$/);
-          if (bq) {
-            flushPara();
-            flushList();
-            out.push(`<blockquote>${inlineMd(esc(bq[1]))}</blockquote>`);
+            out.push(`<h${h[1].length}>${inner(esc(h[2].trim()))}</h${h[1].length}>`);
             i += 1;
             continue;
           }
           const li = line.match(/^(\s*)([-*+]|\d+[.)])\s+(.*)$/);
           if (li) {
             flushPara();
-            const depth = Math.min(3, Math.floor(li[1].replace(/\t/g, "  ").length / 2));
             const type = /\d/.test(li[2]) ? "ol" : "ul";
             if (!list || list.type !== type) {
               flushList();
               list = { type, items: [] };
             }
-            list.items.push({ depth, html: inlineMd(esc(li[3].trim())) });
+            list.items.push({ html: inner(esc(li[3].trim())) });
             i += 1;
             continue;
           }
@@ -573,6 +567,18 @@
         flushPara();
         flushList();
         return out.join("\n");
+      }
+
+      function renderMarkdown(md) {
+        if (typeof marked === "undefined" || typeof DOMPurify === "undefined") {
+          return renderMarkdownFallback(md);
+        }
+        try {
+          const html = marked.parse(String(md ?? ""), { gfm: true, breaks: false });
+          return DOMPurify.sanitize(html, { USE_PROFILES: { html: true } });
+        } catch {
+          return renderMarkdownFallback(md);
+        }
       }
 
       // --- compact overview of high-level phases ----------------------------
@@ -657,6 +663,18 @@
             recordUsage(entry.agent, entry.usage);
           }
         }
+        // Task fallback: sessions whose control plane predates the /api/task
+        // endpoint still carry the task inside the opening user message.
+        if (
+          entry.kind === "message" &&
+          entry.role === "user" &&
+          typeof entry.content === "string" &&
+          entry.content.includes("## Broad research task") &&
+          !fallbackTask
+        ) {
+          fallbackTask = extractTask(entry.content);
+          if (fallbackTask) refreshTask();
+        }
         // Agents already record their own inbound/outbound handoffs; the
         // control-plane duplicates would render twice, so skip them here.
         // (They remain in session.jsonl for audit.)
@@ -684,6 +702,9 @@
         ) {
           return;
         }
+
+        // The finished assistant message replaces its live (streaming) preview.
+        if (entry.kind === "message" && entry.role === "assistant") finishStream(entry.agent);
 
         const who = entry.agent === "control" ? "control" : entry.agent || "control";
         const div = document.createElement("div");
@@ -750,9 +771,108 @@
 
         const stick = scroll && atBottom();
         timeline.appendChild(div);
+        keepStreamsLast();
         finalizeClamp(div);
         addOverview(entry, div);
         applyFilters();
+        if (stick) scrollToBottom();
+        else latestBtn.hidden = atBottom();
+      }
+
+      // --- live streaming of in-progress assistant output -------------------
+      // Preview bubbles fed by `partial` SSE ops (never persisted). Per agent,
+      // previews are kept in message order; the finished message arriving from
+      // the transcript replaces the oldest one. Its next message may already be
+      // streaming by then, so only the oldest preview is retired, and a 15 s
+      // fallback retires ended previews whose entry never shows up.
+      const streams = new Map(); // agent -> [{ id, ended, div, thinking, text, tools, endTimer }]
+      const lastStreamId = { researcher: 0, advisor: 0 };
+
+      function agentStreams(agent) {
+        if (!streams.has(agent)) streams.set(agent, []);
+        return streams.get(agent);
+      }
+
+      function retireStream(agent, stream) {
+        const list = agentStreams(agent);
+        const i = list.indexOf(stream);
+        if (i === -1) return;
+        clearTimeout(stream.endTimer);
+        stream.div.remove();
+        list.splice(i, 1);
+      }
+
+      /** The finished assistant message replaces its preview. */
+      function finishStream(agent) {
+        const list = streams.get(agent);
+        if (!list || !list.length) return;
+        retireStream(agent, list.find((x) => x.ended) || list[0]);
+      }
+
+      function openStream(agent, id) {
+        const div = document.createElement("div");
+        div.className = `entry ${agent} streaming`;
+        div.dataset.who = agent;
+        div.innerHTML =
+          metaHtml(agent, { ts: Date.now() }, '<span>assistant</span><span class="pulse">streaming</span>') +
+          '<div class="bubble"><pre class="stream-thinking"></pre><div class="v stream-text"></div><div class="stream-tools"></div></div>';
+        timeline.appendChild(div);
+        if (filters[agent] === false) div.style.display = "none";
+        const stream = {
+          id,
+          ended: false,
+          div,
+          thinking: div.querySelector(".stream-thinking"),
+          text: div.querySelector(".stream-text"),
+          tools: div.querySelector(".stream-tools"),
+          endTimer: null,
+        };
+        agentStreams(agent).push(stream);
+        return stream;
+      }
+
+      /** Keep in-progress previews below newly appended transcript entries. */
+      function keepStreamsLast() {
+        for (const list of streams.values()) {
+          for (const stream of list) if (!stream.ended) timeline.appendChild(stream.div);
+        }
+      }
+
+      function applyPartial(agent, ops) {
+        if (agent !== "researcher" && agent !== "advisor") return;
+        const stick = atBottom();
+        for (const op of ops) {
+          const id = Number(op.id) || 0;
+          const list = agentStreams(agent);
+          let stream = list.find((x) => x.id === id);
+          if (op.op === "start") {
+            // A lower id means the agent process restarted (e.g. resume).
+            if (id <= lastStreamId[agent]) for (const x of [...list]) retireStream(agent, x);
+            lastStreamId[agent] = id;
+            if (!stream) openStream(agent, id);
+            continue;
+          }
+          if (!stream) {
+            // A delta for a message we never saw start (page loaded mid-stream),
+            // or a late op for one that is already final: show only the former.
+            if (id <= lastStreamId[agent] || op.op === "end") continue;
+            lastStreamId[agent] = id;
+            stream = openStream(agent, id);
+          }
+          if (op.op === "delta") {
+            const target = op.channel === "thinking" ? stream.thinking : stream.text;
+            target.textContent += op.text || "";
+            if (op.channel === "thinking") stream.thinking.scrollTop = stream.thinking.scrollHeight;
+          } else if (op.op === "tool") {
+            stream.tools.textContent += `→ calling ${op.name || "tool"}…\n`;
+          } else if (op.op === "end") {
+            stream.ended = true;
+            stream.div.querySelector(".pulse").textContent = "finishing";
+            clearTimeout(stream.endTimer);
+            stream.endTimer = setTimeout(() => retireStream(agent, stream), 15000);
+          }
+        }
+        lastActivity[agent] = Date.now();
         if (stick) scrollToBottom();
         else latestBtn.hidden = atBottom();
       }
@@ -772,6 +892,7 @@
       }
 
       let lastGoalsRaw = null;
+      let fallbackTask = null;
       function refreshGoals() {
         fetch("/api/goals?token=" + encodeURIComponent(TOKEN))
           .then((r) => r.json())
@@ -784,12 +905,46 @@
               el.innerHTML = '<div class="muted-note">(not yet written)</div>';
               return;
             }
-            el.innerHTML = mdToHtml(raw);
+            el.innerHTML = renderMarkdown(raw);
           })
           .catch(() => {});
       }
+      let lastTaskRaw = null;
+      // Recover the task from the session's opening message when the control
+      // plane predates the /api/task endpoint.
+      function extractTask(content) {
+        const start = String(content || "").indexOf("## Broad research task");
+        if (start === -1) return "";
+        let task = String(content).slice(start + "## Broad research task".length);
+        let end = task.length;
+        for (const marker of ["\n## ", "\n\nBegin by", "\n\nBegin with", "\n\nSkills step", "\n\nNow decompose"]) {
+          const idx = task.indexOf(marker);
+          if (idx !== -1 && idx > 0) end = Math.min(end, idx);
+        }
+        return task.slice(0, end).trim();
+      }
+      function refreshTask() {
+        const showTask = (raw) => {
+          const el = document.getElementById("task");
+          if (!raw || !raw.trim()) {
+            el.innerHTML = '<div class="muted-note">(no task provided)</div>';
+            return;
+          }
+          if (raw === lastTaskRaw) return;
+          lastTaskRaw = raw;
+          el.innerHTML = renderMarkdown(raw);
+        };
+        fetch("/api/task?token=" + encodeURIComponent(TOKEN))
+          .then((r) => r.json())
+          .then((d) => showTask((d && d.task) || fallbackTask || ""))
+          .catch(() => showTask(fallbackTask || ""));
+      }
+      refreshTask();
       refreshGoals();
-      setInterval(refreshGoals, 3000);
+      setInterval(() => {
+        refreshGoals();
+        refreshTask();
+      }, 3000);
 
       const es = new EventSource("/api/stream?token=" + encodeURIComponent(TOKEN));
       es.onmessage = (ev) => {
@@ -800,6 +955,7 @@
           // Full transcript replay on (re)connect — replace rather than append
           // so a reconnect cannot duplicate entries.
           timeline.innerHTML = "";
+          streams.clear();
           overview.innerHTML = "";
           overviewItems = [];
           for (const entry of msg.entries || []) addEntry(entry, false);
@@ -807,6 +963,8 @@
           updateActiveOverview();
         } else if (msg.type === "entry") {
           addEntry(msg.entry, true);
+        } else if (msg.type === "partial") {
+          applyPartial(msg.agent, msg.ops || []);
         }
       };
       es.onerror = () => {
@@ -844,7 +1002,10 @@
       }
 
       // --- draggable panel sizes -------------------------------------------
-      function makeResizer(dividerId, panelId, min) {
+      // `direction` is +1 when the divider is the panel's RIGHT edge (dragging
+      // right grows the panel) and -1 when it is the LEFT edge (dragging right
+      // shrinks it, so the boundary follows the cursor).
+      function makeResizer(dividerId, panelId, min, direction) {
         const divider = document.getElementById(dividerId);
         const panel = document.getElementById(panelId);
         if (!divider || !panel) return;
@@ -856,7 +1017,7 @@
           const startX = e.clientX;
           const startW = panel.getBoundingClientRect().width;
           const move = (ev) => {
-            const w = Math.max(min, startW + (ev.clientX - startX));
+            const w = Math.max(min, startW + direction * (ev.clientX - startX));
             panel.style.width = `${w}px`;
           };
           const up = () => {
@@ -869,8 +1030,8 @@
           window.addEventListener("pointerup", up);
         });
       }
-      makeResizer("resize-overview", "overview-wrap", 180);
-      makeResizer("resize-goals", "goals-pane", 200);
+      makeResizer("resize-goals", "goals-pane", 240, 1);
+      makeResizer("resize-overview", "overview-wrap", 180, -1);
     </script>
   </body>
 </html>

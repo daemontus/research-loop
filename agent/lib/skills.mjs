@@ -14,7 +14,7 @@ export function parseSkillFrontmatter(content) {
   }
   const block = match[1];
   const nameMatch = block.match(/^name:\s*(.+)$/m);
-  const descMatch = block.match(/^description:\s*(?:>-?\s*\n)?([\s\S]*?)(?=^\w|\s*$)/m);
+  const descMatch = block.match(/^description:[ \t]*(?:[>|][-+]?[ \t]*\n)?([\s\S]*?)(?=\n\S|$(?![\s\S]))/m);
   let description = descMatch ? descMatch[1].trim() : "";
   description = description
     .split(/\r?\n/)

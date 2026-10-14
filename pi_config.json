@@ -3,7 +3,7 @@
     {
       "id": "psyche",
       "name": "psyche",
-      "baseUrl": "http://100.78.63.7:15000/v1",
+      "baseUrl": "https://ai.infra.sybila.fi.muni.cz/api-15000/v1",
       "apiKeyEnv": "PSYCHE_API_KEY",
       "models": [
         { "id": "qwen3.8-flash-next-iq3_s", "input": ["text", "image"] },

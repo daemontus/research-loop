@@ -27,11 +27,15 @@ import {
   providerForDocker,
   resolveCredentials,
 } from "./credentials.mjs";
-import { imageExists, runContainer, stopContainer } from "./docker.mjs";
+import { dockerBridgeGateway, imageExists, runContainer, stopContainer } from "./docker.mjs";
 import { buildRunStats, renderStatsSummary } from "./stats.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
+
+function isLoopbackHost(host) {
+  return host === "127.0.0.1" || host === "localhost" || host === "::1" || /^127\./.test(host);
+}
 
 function parseArgs(argv) {
   const args = {
@@ -51,7 +55,7 @@ function parseArgs(argv) {
     view: null,
     host: "127.0.0.1",
     port: 0,
-    maxHandoffs: 200,
+    maxHandoffs: 0,
     wallclockMs: 0,
     maxTurnsPerPhase: 1000,
     abortTimeoutMs: 0,
@@ -75,7 +79,10 @@ function parseArgs(argv) {
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    const next = () => argv[++i];
+    const next = () => {
+      if (i + 1 >= argv.length) throw new Error(`missing value for ${a}`);
+      return argv[++i];
+    };
     switch (a) {
       case "--task": args.task = next(); args.taskSet = true; break;
       case "--task-file": args.taskFile = next(); break;
@@ -105,7 +112,7 @@ function parseArgs(argv) {
       case "--auto-approve": args.autoApprove = true; break;
       case "--no-open": args.open = false; break;
       case "--no-model-discovery": args.discoverModels = false; break;
-      case "--skip-skills": args.skipSkills = true; break;
+      case "--skip-skills": args.skipSkills = true; args.skipSkillsSet = true; break;
       case "--researcher-context-window": args.researcherContextWindow = Number(next()); break;
       case "--advisor-context-window": args.advisorContextWindow = Number(next()); break;
       case "--researcher-max-tokens": args.researcherMaxTokens = Number(next()); break;
@@ -123,7 +130,7 @@ function parseArgs(argv) {
             "  --researcher-context-window N  --advisor-context-window N",
             "  --researcher-max-tokens N      --advisor-max-tokens N",
             "  --max-handoffs N  --wallclock-ms N  --max-turns-per-phase N",
-            "    (--max-handoffs caps researcher goal steps: proposals + results)",
+            "    (--max-handoffs caps researcher goal steps: proposals + results; 0 = unlimited)",
             "  --host <ip>  --port <n>  (WebUI bind address/port; defaults 127.0.0.1 / random)",
             "  --abort-timeout-ms N  --phase-timeout-ms N  (0 = disabled; default 0)",
             "  --resume <run-id|dir>    continue an interrupted session (fresh containers,",
@@ -166,19 +173,48 @@ function resolveRunArg(arg) {
   return path.resolve(REPO_ROOT, "runs", raw);
 }
 
-/** Read summary metadata written by a previous orchestrator run. */
-function readRunMeta(runDir) {
-  let meta = {};
+function readJsonFile(file) {
   try {
-    meta = JSON.parse(fs.readFileSync(path.join(runDir, "session.json"), "utf8"));
+    return JSON.parse(fs.readFileSync(file, "utf8"));
   } catch {
-    // never finished cleanly
+    return {};
   }
+}
+
+/** The `start` entry of a run's session log (task, skipSkills), if any. */
+function readSessionStart(runDir) {
+  try {
+    const lines = fs.readFileSync(path.join(runDir, "transcripts", "session.jsonl"), "utf8").split("\n");
+    for (const line of lines) {
+      if (!line.includes('"start"')) continue;
+      try {
+        const e = JSON.parse(line);
+        if (e.kind === "start") return e;
+      } catch {
+        // skip malformed lines
+      }
+    }
+  } catch {
+    // no session log
+  }
+  return {};
+}
+
+/**
+ * Read metadata of a previous orchestrator run. `session.json` is only written
+ * on a clean exit, so fall back to `run.json` (written at startup) and finally
+ * to the `start` entry of the session log.
+ */
+function readRunMeta(runDir) {
+  const meta = readJsonFile(path.join(runDir, "session.json"));
+  const run = readJsonFile(path.join(runDir, "run.json"));
+  const start = readSessionStart(runDir);
   return {
-    sessionId: meta.sessionId || path.basename(runDir),
-    task: meta.task || "",
-    researcherModel: meta.researcherModel || null,
-    advisorModel: meta.advisorModel || null,
+    sessionId: meta.sessionId || run.sessionId || path.basename(runDir),
+    task: meta.task || run.task || start.task || "",
+    researcherModel: meta.researcherModel || run.researcherModel || null,
+    advisorModel: meta.advisorModel || run.advisorModel || null,
+    skipSkills: Boolean(meta.skipSkills ?? run.skipSkills ?? start.skipSkills),
     state: meta.state || null,
     uiUrl: meta.uiUrl || "",
   };
@@ -402,6 +438,13 @@ async function main() {
     if (!args.advisorModelSet && runMeta.advisorModel) {
       args.advisorModel = runMeta.advisorModel;
     }
+    if (!args.skipSkillsSet && runMeta.skipSkills) args.skipSkills = true;
+    if ((resumed && !runMeta.researcherModel) || (resumed && !runMeta.advisorModel)) {
+      console.warn(
+        "[research-loop] warning: models of the original run are unknown; using " +
+          `${args.researcherModel} / ${args.advisorModel} (override with --researcher-model/--advisor-model)`,
+      );
+    }
   }
   if (!args.task.trim()) {
     throw new Error(
@@ -454,7 +497,7 @@ async function main() {
       skipSkills: args.skipSkills,
       installedSkillsPath: path.join(researcherSandbox, "skills"),
       viewOnly: true,
-      seedState: runMeta?.state || null,
+      seedState: runMeta?.state || replaySessionLog(transcriptDir).state,
     });
     console.log(`[research-loop] viewing session ${sessionId}`);
     console.log(`[research-loop] UI: ${control.url}`);
@@ -524,6 +567,23 @@ async function main() {
       throw new Error(`session ${sessionId} already completed; use --view to review it`);
     }
   }
+
+  // Persist the run's settings up front so a crashed run can still be resumed
+  // with the same task/models (session.json is only written on a clean exit).
+  fs.writeFileSync(
+    path.join(runDir, "run.json"),
+    JSON.stringify(
+      {
+        sessionId,
+        task: args.task,
+        researcherModel: args.researcherModel,
+        advisorModel: args.advisorModel,
+        skipSkills: args.skipSkills,
+      },
+      null,
+      2,
+    ),
+  );
 
   const control = await startControlPlane({
     token,
@@ -621,14 +681,6 @@ async function main() {
     },
   };
 
-  if (args.printJobs) {
-    console.log(JSON.stringify(jobs, null, 2));
-    control.close();
-    return;
-  }
-
-  if (args.open) openBrowser(control.url);
-
   // In docker mode the broker URL uses a fixed in-container port; bind the
   // control plane to that port on the host side is not possible with a random
   // port, so we rewrite to the actual port but keep host.docker.internal.
@@ -637,10 +689,38 @@ async function main() {
       job.brokerUrl = `http://host.docker.internal:${control.port}`;
       if (job.provider) job.provider = providerForDocker(job.provider);
     }
+  }
+
+  if (args.printJobs) {
+    // Final jobs as the agents receive them, minus secrets.
+    const redact = (k, v) => ((k === "apiKey" || k === "token") && v ? "<redacted>" : v);
+    console.log(JSON.stringify(jobs, redact, 2));
+    control.close();
+    return;
+  }
+
+  if (args.open) openBrowser(control.url);
+
+  if (!args.local) {
     if (!imageExists(args.image)) {
       throw new Error(
         `Docker image ${args.image} not found. Build it with: docker build -f Dockerfile.agent -t ${args.image} .`,
       );
+    }
+    // On Linux, host.docker.internal is the bridge gateway, which cannot reach
+    // a loopback-bound server; additionally listen on the gateway address.
+    if (process.platform === "linux" && isLoopbackHost(args.host)) {
+      const gateway = dockerBridgeGateway();
+      try {
+        if (!gateway) throw new Error("could not determine the docker bridge gateway");
+        await control.listenAlso(gateway);
+        console.log(`[research-loop] control plane also listening on ${gateway}:${control.port} (docker bridge)`);
+      } catch (e) {
+        console.error(
+          `[research-loop] warning: containers may not reach the control plane (${e?.message || e}); ` +
+            "pass --host 0.0.0.0 (or the docker bridge IP) if agents fail to register",
+        );
+      }
     }
   }
 
@@ -732,16 +812,20 @@ async function main() {
           resolve(control.broker.snapshot());
         }
       });
-      child.on("close", (code) => {
-        if (code !== 0 && !control.broker.isClosed()) {
+      // Any agent exit before the session closes ends the run: an agent that is
+      // still thinking keeps its process/container alive, so exit (even with
+      // code 0, e.g. after an external SIGTERM) means it is gone for good.
+      child.on("close", (code, signal) => {
+        if (!control.broker.isClosed()) {
           const role = name.includes("researcher")
             ? "researcher"
             : name.includes("advisor")
               ? "advisor"
               : name;
           const detail = agentFatal[role] ? `: ${agentFatal[role]}` : "";
-          console.error(`[research-loop] ${name} exited with code ${code}${detail}`);
-          control.broker.abort(`${name} exited with code ${code}${detail}`);
+          const how = signal ? `signal ${signal}` : `code ${code}`;
+          console.error(`[research-loop] ${name} exited with ${how}${detail}`);
+          control.broker.abort(`${name} exited with ${how}${detail}`);
           clearInterval(timer);
           resolve(control.broker.snapshot());
         }
@@ -750,10 +834,10 @@ async function main() {
   });
 
   if (wallclock) clearTimeout(wallclock);
-  const snap = control.broker.snapshot();
-  if (snap.state !== "DONE" && snap.state !== "ABORTED") {
+  if (!["DONE", "ABORTED"].includes(control.broker.snapshot().state)) {
     control.broker.abort("orchestrator shutting down");
   }
+  const snap = control.broker.snapshot();
 
   // Let containers flush and exit.
   await new Promise((r) => setTimeout(r, 1500));
@@ -774,6 +858,7 @@ async function main() {
     task: args.task,
     researcherModel: args.researcherModel,
     advisorModel: args.advisorModel,
+    skipSkills: args.skipSkills,
     token,
     state: control.broker.snapshot(),
     agentStats: agentEvents,
