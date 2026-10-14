@@ -4,6 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>research-loop transcript</title>
+    <!-- Two arrows chasing each other: researcher (blue) and advisor (orange). -->
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23161b22'/%3E%3Cpath d='M8.5 16a7.5 7.5 0 0 1 12.6-5.5' fill='none' stroke='%234f9cf9' stroke-width='3.2' stroke-linecap='round'/%3E%3Cpath d='M19.4 6.6l5.3 2.2-3.3 4.7z' fill='%234f9cf9'/%3E%3Cpath d='M23.5 16a7.5 7.5 0 0 1-12.6 5.5' fill='none' stroke='%23f5a623' stroke-width='3.2' stroke-linecap='round'/%3E%3Cpath d='M12.6 25.4l-5.3-2.2 3.3-4.7z' fill='%23f5a623'/%3E%3C/svg%3E" />
     <style>
       :root {
         --bg: #0e1116;
@@ -34,23 +36,48 @@
       header {
         display: flex;
         align-items: center;
-        gap: 16px;
-        padding: 10px 16px;
+        gap: 6px 14px;
+        padding: 8px 14px;
         background: var(--panel);
         border-bottom: 1px solid var(--border);
         flex-wrap: wrap;
       }
       header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+      .brand { display: inline-flex; align-items: center; gap: 7px; min-width: 0; }
+      #run-label {
+        color: var(--muted); font-size: 13px; max-width: 28ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      #run-label:not(:empty)::before { content: "/ "; }
+      .header-tools { display: inline-flex; align-items: center; gap: 10px; margin-left: auto; flex-wrap: wrap; }
+      .agent-live { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+      .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--control); display: inline-block; flex: none; }
+      .dot.active { background: var(--ok); box-shadow: 0 0 0 3px rgba(63,185,80,.18); }
+      .dot.idle { background: var(--warn); }
+      .chip {
+        display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 999px;
+        border: 1px solid var(--border); font-size: 11px; color: var(--muted); cursor: pointer; user-select: none;
+      }
+      .chip input { display: none; }
+      .chip::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+      .chip.researcher::before { background: var(--researcher); }
+      .chip.advisor::before { background: var(--advisor); }
+      .chip.human::before { background: var(--human); }
+      .chip.control::before { background: var(--control); }
+      .chip:has(input:checked) { color: var(--text); background: var(--panel2); }
+      .chip:not(:has(input:checked)) { opacity: .55; text-decoration: line-through; }
+      .icon-btn { display: inline-flex; align-items: center; justify-content: center; padding: 4px 6px; color: var(--muted); }
+      .icon-btn[hidden] { display: none; }
+      .icon-btn[aria-pressed="true"] { color: #ffd479; border-color: #6b5200; background: #2a2200; }
       .stat { font-size: 12px; color: var(--muted); }
       .stat b { color: var(--text); font-weight: 600; }
       .stat .tok-sub { color: var(--muted); font-size: 11px; }
       .live { transition: color .3s; }
       .live.active { color: var(--ok); }
       .live.idle { color: var(--warn); }
-      .searchbox { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+      .searchbox { display: inline-flex; align-items: center; gap: 6px; }
       .searchbox input {
         background: var(--panel2); color: var(--text); border: 1px solid var(--border);
-        border-radius: 6px; padding: 4px 8px; font: inherit; font-size: 12px; width: 220px;
+        border-radius: 6px; padding: 4px 8px; font: inherit; font-size: 12px; width: 180px;
       }
       .searchbox input:focus { outline: none; border-color: #3d4757; }
       #search-count { font-size: 11px; color: var(--muted); min-width: 2em; text-align: right; }
@@ -64,9 +91,16 @@
       .state.AWAITING_HUMAN { background: #3a2e00; color: #ffd479; border-color: #6b5200; }
       .state.DONE { background: #10331b; color: #7ee2a8; border-color: #1c5a30; }
       .state.ABORTED { background: #3a1414; color: #ff9a92; border-color: #6b1f1f; }
-      main { flex: 1; display: flex; min-height: 0; }
-      #timeline-wrap { flex: 1; position: relative; min-height: 0; display: flex; }
-      #timeline { flex: 1; overflow-y: auto; padding: 16px; position: relative; }
+      /* Side panes shrink to their min-width before the page would overflow. */
+      main { flex: 1; display: flex; min-height: 0; overflow: hidden; }
+      #timeline-wrap { flex: 1; position: relative; min-height: 0; min-width: 280px; display: flex; flex-direction: column; }
+      #timeline-tools {
+        flex: none; display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap;
+        padding: 6px 12px; border-bottom: 1px solid var(--border); background: var(--panel);
+      }
+      #timeline-tools .searchbox { flex: 1; min-width: 140px; }
+      #timeline-tools .searchbox input { width: 100%; }
+      #timeline { flex: 1; min-height: 0; overflow-y: auto; padding: 16px; position: relative; }
       .latest {
         position: absolute; bottom: 16px; right: 16px; display: inline-flex;
         align-items: center; gap: 4px; padding: 6px 12px; border-radius: 999px;
@@ -76,21 +110,35 @@
       .latest[hidden] { display: none !important; }
       aside {
         width: 380px; border-right: 1px solid var(--border); background: var(--panel);
-        display: flex; flex-direction: column; min-height: 0; flex: none; min-width: 240px;
+        display: flex; flex-direction: column; min-height: 0; flex: 0 1 auto; min-width: 240px;
       }
-      aside .side-head { padding: 10px 14px; border-bottom: 1px solid var(--border); font-weight: 600; flex: none; }
       #pane-scroll { flex: 1; overflow-y: auto; }
       #task { padding: 12px 14px; border-bottom: 1px solid var(--border); font-size: 13px; line-height: 1.55; }
       #overview-wrap {
         width: 300px; border-left: 1px solid var(--border); background: var(--panel);
-        display: flex; flex-direction: column; min-height: 0; flex: none; min-width: 180px;
+        display: flex; flex-direction: column; min-height: 0; flex: 0 1 auto; min-width: 180px;
       }
       .divider {
         flex: none; width: 5px; cursor: col-resize; background: transparent;
         border-left: 1px solid var(--border); border-right: 1px solid var(--border);
       }
       .divider:hover, .divider.dragging { background: #3d4757; }
-      #overview-wrap .side-head { padding: 10px 14px; border-bottom: 1px solid var(--border); font-weight: 600; }
+      .divider.hidden { display: none; }
+      .pane .side-head {
+        display: flex; align-items: center; justify-content: space-between; gap: 8px;
+        padding: 10px 14px; border-bottom: 1px solid var(--border); font-weight: 600; flex: none;
+      }
+      .collapse-btn {
+        border: none; background: none; color: var(--muted); padding: 0 4px; font-size: 15px; line-height: 20px;
+      }
+      .collapse-btn:hover { color: var(--text); }
+      .pane.collapsed { width: 30px !important; min-width: 30px !important; flex: none; cursor: pointer; }
+      .pane.collapsed > :not(.side-head) { display: none !important; }
+      .pane.collapsed .side-head {
+        flex-direction: column; justify-content: flex-start; height: 100%; padding: 8px 0; border-bottom: none;
+      }
+      .pane.collapsed .side-title { writing-mode: vertical-rl; font-size: 12px; color: var(--muted); }
+      .pane.collapsed:hover .side-title { color: var(--text); }
       #overview { flex: 1; overflow-y: auto; padding: 8px; }
       .ov-item {
         display: block; width: 100%; text-align: left; margin: 0 0 4px; padding: 6px 8px;
@@ -111,6 +159,27 @@
       .ov-item .ov-who.control { color: var(--control); }
       .ov-item .ov-label { display: block; font-size: 12px; margin-top: 2px; }
       .ov-item .ov-goal { color: var(--muted); }
+      .ov-section { margin-bottom: 6px; }
+      .ov-head {
+        display: flex; align-items: center; gap: 6px; width: 100%; padding: 5px 4px; margin: 0 0 4px;
+        background: none; border: none; border-radius: 4px; color: var(--text); font-size: 12px; font-weight: 600;
+        text-align: left; cursor: pointer;
+      }
+      .ov-head:hover { background: var(--panel2); border-color: transparent; }
+      .ov-head .caret { color: var(--muted); font-size: 10px; transition: transform .15s; }
+      .ov-section.collapsed .caret { transform: rotate(-90deg); }
+      .ov-section.collapsed .ov-items { display: none; }
+      .ov-head .ov-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .ov-status {
+        flex: none; font-size: 10px; font-weight: 600; padding: 1px 7px; border-radius: 999px;
+        border: 1px solid var(--border); color: var(--muted); white-space: nowrap;
+      }
+      .ov-status[hidden] { display: none; }
+      .ov-status.done { color: #7ee2a8; border-color: #1c5a30; background: #10331b; }
+      .ov-status.progress { color: #79c0ff; border-color: #1f4f8a; background: #0f2236; }
+      .ov-status.review { color: #ffd479; border-color: #6b5200; background: #2a2200; }
+      .ov-status.changes { color: #ff9a92; border-color: #6b1f1f; background: #2a1212; }
+      #ov-progress { color: var(--muted); font-weight: 400; font-size: 12px; }
       .entry.flash .bubble { outline: 2px solid #f5a623; outline-offset: 1px; }
       #goals { padding: 12px 14px; font-size: 13px; line-height: 1.55; color: var(--text); }
       #goals .muted-note { color: var(--muted); font: 12px/1.5 var(--mono); }
@@ -190,33 +259,47 @@
       #approval textarea { width: 100%; background: var(--panel2); color: var(--text); border: 1px solid var(--border);
         border-radius: 6px; padding: 6px; margin: 6px 0; font: inherit; }
       .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-      .filters label { font-size: 12px; color: var(--muted); margin-right: 10px; cursor: pointer; }
+      .filters { display: inline-flex; gap: 4px; }
+      /* Markdown inside transcript bubbles. */
+      .md { white-space: normal; }
+      .md > :first-child { margin-top: 0; }
+      .md > :last-child { margin-bottom: 0; }
+      .md p { margin: 6px 0; }
+      .md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { font-size: 14px; margin: 10px 0 4px; }
+      .md h1, .md h2 { border-bottom: 1px solid var(--border); padding-bottom: 2px; }
+      .md ul, .md ol { margin: 4px 0 6px; padding-left: 22px; }
+      .md li { margin: 1px 0; }
+      .md code { background: #10141b; border-radius: 4px; padding: 1px 4px; font: 12px var(--mono); color: #ffd479; }
+      .md pre { background: #10141b; border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; overflow-x: auto; white-space: pre; }
+      .md pre code { background: none; padding: 0; color: var(--text); }
+      .md blockquote { margin: 6px 0; padding: 2px 10px; border-left: 3px solid var(--border); color: var(--muted); }
+      .md table { border-collapse: collapse; margin: 6px 0; font-size: 13px; display: block; overflow-x: auto; }
+      .md th, .md td { border: 1px solid var(--border); padding: 3px 8px; text-align: left; }
+      .md th { background: var(--panel2); }
+      .md a { color: var(--researcher); }
+      .md hr { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
+      .md img { max-width: 100%; }
     </style>
   </head>
   <body>
     <header>
-      <h1>research-loop</h1>
+      <span class="brand"><img id="brand-icon" alt="" width="18" height="18" /><h1>research-loop</h1><span id="run-label"></span></span>
       <span id="state" class="badge state">…</span>
-      <span class="stat">goal <b id="goal">-</b></span>
-      <span class="stat">handoffs <b id="handoffs">0</b></span>
-      <span class="stat">tokens <b id="tok-total">0</b> <span class="tok-sub">in <b id="tok-in">0</b> · out <b id="tok-out">0</b> · cached <b id="tok-cache">0</b></span></span>
-      <span class="stat" title="who the state machine expects to act next">expecting <b id="expecting">-</b></span>
-      <span class="stat">researcher <b id="live-researcher" class="live">offline</b></span>
-      <span class="stat">advisor <b id="live-advisor" class="live">offline</b></span>
-      <span class="searchbox">
-        <input id="search" type="search" placeholder="search transcript…" autocomplete="off" />
-        <span id="search-count" title="matching transcript entries"></span>
-      </span>
-      <span class="filters">
-        <label><input type="checkbox" data-filter="researcher" checked /> researcher</label>
-        <label><input type="checkbox" data-filter="advisor" checked /> advisor</label>
-        <label><input type="checkbox" data-filter="human" checked /> human</label>
-        <label><input type="checkbox" data-filter="control" checked /> control</label>
+      <span class="stat" title="current goal">goal <b id="goal">-</b></span>
+      <span class="stat" title="handoffs between the agents"><b id="handoffs">0</b> handoffs</span>
+      <span class="stat" id="tok-stat"><b id="tok-total">0</b> tokens</span>
+      <span class="stat" title="who the state machine expects to act next">next <b id="expecting">-</b></span>
+      <span class="stat agent-live"><i class="dot" id="dot-researcher"></i>researcher <b id="live-researcher" class="live">offline</b></span>
+      <span class="stat agent-live"><i class="dot" id="dot-advisor"></i>advisor <b id="live-advisor" class="live">offline</b></span>
+      <span class="header-tools">
+        <button id="notify-btn" class="icon-btn" type="button" hidden aria-pressed="false">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M12 22a2.5 2.5 0 0 0 2.45-2h-4.9A2.5 2.5 0 0 0 12 22Zm7-6V11a7 7 0 0 0-5.5-6.84V3.5a1.5 1.5 0 0 0-3 0v.66A7 7 0 0 0 5 11v5l-2 2v1h18v-1l-2-2Z"/></svg>
+        </button>
       </span>
     </header>
     <main>
-      <aside id="goals-pane">
-        <div class="side-head">Task / Goals</div>
+      <aside id="goals-pane" class="pane">
+        <div class="side-head"><span class="side-title">Task / Goals</span><button class="collapse-btn" type="button"></button></div>
         <div id="pane-scroll">
           <div id="task"><div class="muted-note">(loading…)</div></div>
           <div id="goals"><div class="muted-note">(not yet written)</div></div>
@@ -241,12 +324,24 @@
       </aside>
       <div class="divider" id="resize-goals" title="Drag to resize"></div>
       <div id="timeline-wrap">
+        <div id="timeline-tools">
+          <span class="searchbox">
+            <input id="search" type="search" placeholder="search transcript…" autocomplete="off" />
+            <span id="search-count" title="matching transcript entries"></span>
+          </span>
+          <span class="filters" title="show/hide entries by author">
+            <label class="chip researcher"><input type="checkbox" data-filter="researcher" checked />researcher</label>
+            <label class="chip advisor"><input type="checkbox" data-filter="advisor" checked />advisor</label>
+            <label class="chip human"><input type="checkbox" data-filter="human" checked />human</label>
+            <label class="chip control"><input type="checkbox" data-filter="control" checked />control</label>
+          </span>
+        </div>
         <div id="timeline"></div>
         <button id="latest" class="latest" type="button" hidden>↓ latest</button>
       </div>
       <div class="divider" id="resize-overview" title="Drag to resize"></div>
-      <section id="overview-wrap">
-        <div class="side-head">Overview</div>
+      <section id="overview-wrap" class="pane">
+        <div class="side-head"><span class="side-title">Overview <span id="ov-progress"></span></span><button class="collapse-btn" type="button"></button></div>
         <div id="overview"></div>
       </section>
     </main>
@@ -255,6 +350,24 @@
     <script src="/vendor/purify.min.js"></script>
     <script>
       const TOKEN = new URLSearchParams(location.search).get("token") || "";
+
+      // Per-viewer UI preferences (pane sizes, notifications). Browser storage
+      // may be unavailable (private mode, blocked site data): never required.
+      const PREFS_KEY = "research-loop.ui";
+      const prefs = (() => {
+        try {
+          return JSON.parse(localStorage.getItem(PREFS_KEY) || "{}") || {};
+        } catch {
+          return {};
+        }
+      })();
+      function savePrefs() {
+        try {
+          localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
+        } catch {
+          // ignore
+        }
+      }
       const timeline = document.getElementById("timeline");
       const latestBtn = document.getElementById("latest");
       const overview = document.getElementById("overview");
@@ -332,6 +445,10 @@
       function fmtNum(n) {
         return (n || 0).toLocaleString("en-US");
       }
+      const compactFmt = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
+      function fmtCompact(n) {
+        return compactFmt.format(n || 0);
+      }
       function fmtAgo(ts) {
         if (!ts) return "offline";
         const s = Math.max(0, (Date.now() - ts) / 1000);
@@ -350,13 +467,24 @@
           tot.out += tokens[role].out;
           tot.cache += tokens[role].cache;
           const el = document.getElementById(`live-${role}`);
-          el.className = `live ${fmtAgo(lastActivity[role]) === "active" ? "active" : lastActivity[role] ? "idle" : "offline"}`;
-          el.textContent = fmtAgo(lastActivity[role]);
+          const dot = document.getElementById(`dot-${role}`);
+          // A finished session has no live agents; "idle 127h" would mislead.
+          if (state?.state === "DONE" || state?.state === "ABORTED") {
+            el.className = "live";
+            el.textContent = "finished";
+            dot.className = "dot";
+            continue;
+          }
+          const ago = fmtAgo(lastActivity[role]);
+          const cls = ago === "active" ? "active" : lastActivity[role] ? "idle" : "offline";
+          el.className = `live ${cls}`;
+          el.textContent = ago;
+          dot.className = `dot ${cls}`;
         }
-        document.getElementById("tok-in").textContent = fmtNum(tot.in);
-        document.getElementById("tok-out").textContent = fmtNum(tot.out);
-        document.getElementById("tok-cache").textContent = fmtNum(tot.cache);
-        document.getElementById("tok-total").textContent = fmtNum(tot.in + tot.out + tot.cache);
+        const total = tot.in + tot.out + tot.cache;
+        document.getElementById("tok-total").textContent = fmtCompact(total);
+        document.getElementById("tok-stat").title =
+          `tokens: ${fmtNum(total)}\nin ${fmtNum(tot.in)} · out ${fmtNum(tot.out)} · cached ${fmtNum(tot.cache)}`;
         const expectEl = document.getElementById("expecting");
         expectEl.textContent = state?.expecting || "–";
         expectEl.title =
@@ -391,7 +519,7 @@
           ["rationale", "Rationale"],
         ]) {
           if (typeof payload[k] === "string" && payload[k].trim()) {
-            parts.push(`<div class="field"><span class="k">${label}</span><div class="v">${esc(payload[k])}</div></div>`);
+            parts.push(`<div class="field"><span class="k">${label}</span><div class="md">${renderMarkdown(payload[k], true)}</div></div>`);
             handled.add(k);
           }
         }
@@ -444,6 +572,7 @@
       }
 
       function bubble(inner) {
+        if (!inner) return ""; // an empty bubble is just a stray pill
         return `<div class="bubble"><div class="clamp">${inner}</div><button class="more" type="button" hidden>Show more</button></div>`;
       }
 
@@ -569,12 +698,13 @@
         return out.join("\n");
       }
 
-      function renderMarkdown(md) {
+      // `breaks`: single newlines become <br> (chat-style transcript messages).
+      function renderMarkdown(md, breaks = false) {
         if (typeof marked === "undefined" || typeof DOMPurify === "undefined") {
           return renderMarkdownFallback(md);
         }
         try {
-          const html = marked.parse(String(md ?? ""), { gfm: true, breaks: false });
+          const html = marked.parse(String(md ?? ""), { gfm: true, breaks });
           return DOMPurify.sanitize(html, { USE_PROFILES: { html: true } });
         } catch {
           return renderMarkdownFallback(md);
@@ -598,42 +728,135 @@
         task_changes: "requested task changes",
       };
 
+      // Overview items are grouped into chronological sections: setup (start,
+      // skills), one per goal (with its title and live status), and task
+      // completion. A revisited goal opens a new section with the same header.
+      const COMPLETION_KINDS = new Set(["task_request", "task_accepted", "task_changes"]);
+      const GOAL_STATUS = {
+        proposal: ["planning", "review"],
+        plan_changes: ["plan changes requested", "changes"],
+        plan_approved: ["in progress", "progress"],
+        result: ["result in review", "review"],
+        result_changes: ["changes requested", "changes"],
+        result_accepted: ["done", "done"],
+      };
+      let goalInfo = new Map(); // goalId -> { title, status: [label, cls], heads: [] }
+      let ovSection = null; // { key, items }
+
+      function resetOverview() {
+        overview.innerHTML = "";
+        overviewItems = [];
+        goalInfo = new Map();
+        ovSection = null;
+        updateOverviewProgress();
+      }
+
+      function updateOverviewProgress() {
+        const goals = [...goalInfo.values()];
+        const done = goals.filter((g) => g.status?.[1] === "done").length;
+        document.getElementById("ov-progress").textContent = goals.length
+          ? `· ${done}/${goals.length} goals done`
+          : "";
+      }
+
+      function renderGoalHead(goalId, head) {
+        const g = goalInfo.get(goalId);
+        head.querySelector(".ov-title").textContent = g.title ? `${goalId} · ${g.title}` : goalId;
+        head.querySelector(".ov-title").title = head.querySelector(".ov-title").textContent;
+        const pill = head.querySelector(".ov-status");
+        pill.hidden = !g.status;
+        if (g.status) {
+          pill.textContent = g.status[0];
+          pill.className = `ov-status ${g.status[1]}`;
+        }
+      }
+
+      function overviewSection(key, goalId) {
+        if (ovSection?.key === key) return ovSection.items;
+        const section = document.createElement("div");
+        section.className = "ov-section";
+        const head = document.createElement("button");
+        head.type = "button";
+        head.className = "ov-head";
+        head.innerHTML = '<span class="caret">▾</span><span class="ov-title"></span><span class="ov-status" hidden></span>';
+        head.addEventListener("click", () => section.classList.toggle("collapsed"));
+        const items = document.createElement("div");
+        items.className = "ov-items";
+        section.append(head, items);
+        overview.appendChild(section);
+        if (goalId) {
+          goalInfo.get(goalId).heads.push(head);
+          renderGoalHead(goalId, head);
+        } else {
+          head.querySelector(".ov-title").textContent = key === "setup" ? "Setup" : "Task completion";
+        }
+        ovSection = { key, items };
+        return items;
+      }
+
       function addOverview(entry, target) {
         let who = entry.agent || "control";
         let label = null;
         const goalId = entry.goalId || null;
+        let sectionKind = null; // "setup" | "completion" | null (goal / current)
         if (entry.kind === "handoff" && entry.direction === "out") {
           label = HANDOFF_LABELS[entry.handoffKind] || entry.handoffKind || "handoff";
+          if (String(entry.handoffKind).startsWith("skills_")) sectionKind = "setup";
+          if (COMPLETION_KINDS.has(entry.handoffKind)) sectionKind = "completion";
         } else if (entry.kind === "start") {
           who = "control";
           label = "session started";
+          sectionKind = "setup";
         } else if (entry.kind === "human_message") {
           who = "human";
           label = "human message";
         } else if (entry.kind === "human_decision") {
           who = "human";
           label = `human: ${entry.action || "decision"}`;
+          sectionKind = "completion";
         } else if (entry.kind === "terminal") {
           who = "control";
           label = `finished: ${entry.reason || ""}`;
+          sectionKind = "completion";
         } else if (entry.kind === "abort") {
           who = "control";
           label = `aborted: ${entry.reason || ""}`;
+          sectionKind = "completion";
         }
         if (label === null) return;
+
+        // Track goal title/status from the researcher's and advisor's handoffs.
+        const isGoalItem = goalId && !sectionKind;
+        if (isGoalItem) {
+          if (!goalInfo.has(goalId)) goalInfo.set(goalId, { title: "", status: null, heads: [] });
+          const g = goalInfo.get(goalId);
+          if (entry.handoffKind === "proposal" && entry.payload?.title) g.title = String(entry.payload.title);
+          if (GOAL_STATUS[entry.handoffKind]) g.status = GOAL_STATUS[entry.handoffKind];
+        }
+        const items = isGoalItem
+          ? overviewSection(`goal:${goalId}`, goalId)
+          : sectionKind
+            ? overviewSection(sectionKind, null)
+            : ovSection?.items || overviewSection("setup", null);
+        if (isGoalItem) {
+          for (const head of goalInfo.get(goalId).heads) renderGoalHead(goalId, head);
+          updateOverviewProgress();
+        }
 
         const el = document.createElement("button");
         el.type = "button";
         el.className = `ov-item ${who}`;
+        // Inside its own goal section the goal id would be redundant.
+        const goalTag = goalId && !isGoalItem ? ` <span class="ov-goal">${esc(goalId)}</span>` : "";
         el.innerHTML =
           `<div class="ov-top"><span class="ov-who ${who}">${esc(who)}</span><span>${fmtTime(entry.ts)}</span></div>` +
-          `<span class="ov-label">${esc(label)}${goalId ? ` <span class="ov-goal">${esc(goalId)}</span>` : ""}</span>`;
+          `<span class="ov-label">${esc(label)}${goalTag}</span>`;
         el.addEventListener("click", () => {
-          target.scrollIntoView({ behavior: "smooth", block: "start" });
+          target.scrollIntoView({ behavior: "smooth", block: "start", inline: "nearest" });
           target.classList.add("flash");
           setTimeout(() => target.classList.remove("flash"), 1200);
         });
-        overview.appendChild(el);
+        items.appendChild(el);
         overviewItems.push({ el, target });
       }
 
@@ -649,7 +872,7 @@
           const r = active.el.getBoundingClientRect();
           const c = overview.getBoundingClientRect();
           if (r.top < c.top || r.bottom > c.bottom) {
-            active.el.scrollIntoView({ block: "nearest" });
+            active.el.scrollIntoView({ block: "nearest", inline: "nearest" });
           }
         }
       }
@@ -725,7 +948,7 @@
             }
           } else {
             if (entry.content && entry.content.trim()) {
-              inner += `<div class="v">${esc(entry.content)}</div>`;
+              inner += `<div class="md">${renderMarkdown(entry.content, true)}</div>`;
             }
             if (entry.tool_calls && entry.tool_calls.length) {
               inner += entry.tool_calls
@@ -747,13 +970,15 @@
           const hk = entry.handoffKind || "handoff";
           const dir = entry.direction === "out" ? "→" : "←";
           const label = `${dir} ${hk}${entry.goalId ? " · " + entry.goalId : ""}`;
-          let inner = entry.text && entry.text.trim() ? `<div class="v">${esc(entry.text)}</div>` : "";
+          let inner = entry.text && entry.text.trim() ? `<div class="md">${renderMarkdown(entry.text, true)}</div>` : "";
           inner += renderPayload(entry.payload);
           div.classList.add("handoff");
           div.innerHTML = metaHtml(who, entry, `<span>${esc(label)}</span>`) + bubble(inner);
         } else if (entry.kind === "human_message" || entry.kind === "human_decision") {
-          const label = `${esc(entry.kind)}${entry.to ? " → " + esc(entry.to) : ""}`;
-          const text = entry.text && entry.text.trim() ? `<div class="v">${esc(entry.text)}</div>` : "";
+          const label =
+            `${esc(entry.kind)}${entry.action ? ": " + esc(entry.action) : ""}` +
+            `${entry.to ? " → " + esc(entry.to) : ""}`;
+          const text = entry.text && entry.text.trim() ? `<div class="md">${renderMarkdown(entry.text, true)}</div>` : "";
           div.innerHTML = metaHtml("human", entry, `<span>${label}</span>`) + bubble(text);
         } else if (
           ["state", "start", "reject", "terminal", "closed", "abort"].includes(entry.kind)
@@ -877,8 +1102,110 @@
         else latestBtn.hidden = atBottom();
       }
 
+      // --- attention: tab title, favicon badge, desktop notifications --------
+      const FAVICON_SVG = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='#161b22'/><path d='M8.5 16a7.5 7.5 0 0 1 12.6-5.5' fill='none' stroke='#4f9cf9' stroke-width='3.2' stroke-linecap='round'/><path d='M19.4 6.6l5.3 2.2-3.3 4.7z' fill='#4f9cf9'/><path d='M23.5 16a7.5 7.5 0 0 1-12.6 5.5' fill='none' stroke='#f5a623' stroke-width='3.2' stroke-linecap='round'/><path d='M12.6 25.4l-5.3-2.2 3.3-4.7z' fill='#f5a623'/></svg>`;
+      function faviconUri(badge) {
+        const svg = badge
+          ? FAVICON_SVG.replace(
+              "</svg>",
+              `<circle cx="25" cy="7" r="6.5" fill="${badge}" stroke="#0e1116" stroke-width="2"/></svg>`,
+            )
+          : FAVICON_SVG;
+        return "data:image/svg+xml," + encodeURIComponent(svg);
+      }
+      const faviconLink = document.querySelector('link[rel="icon"]');
+      document.getElementById("brand-icon").src = faviconUri(null);
+      const ATTENTION = {
+        AWAITING_HUMAN: {
+          badge: "#ffd479",
+          mark: "●",
+          title: "Needs your approval",
+          body: () => "The advisor accepted task completion. Approve it, or reject to keep working.",
+        },
+        DONE: { badge: "#3fb950", mark: "✓", title: "Finished", body: (s) => s.terminalReason || "Session done." },
+        ABORTED: { badge: "#f85149", mark: "✗", title: "Aborted", body: (s) => s.terminalReason || "Session aborted." },
+      };
+
+      const notifyBtn = document.getElementById("notify-btn");
+      const canNotify = "Notification" in window && window.isSecureContext;
+      function notifyEnabled() {
+        return canNotify && Notification.permission === "granted" && prefs.notify === true;
+      }
+      function renderNotifyBtn() {
+        notifyBtn.hidden = !canNotify;
+        if (!canNotify) return;
+        notifyBtn.setAttribute("aria-pressed", String(notifyEnabled()));
+        notifyBtn.title = notifyEnabled()
+          ? "Desktop notifications on (click to turn off)"
+          : Notification.permission === "denied"
+            ? "Notifications are blocked for this site in the browser settings"
+            : "Notify me when approval is needed or the run ends";
+      }
+      notifyBtn.addEventListener("click", async () => {
+        if (notifyEnabled()) {
+          prefs.notify = false;
+        } else {
+          const perm =
+            Notification.permission === "default"
+              ? await Notification.requestPermission()
+              : Notification.permission;
+          prefs.notify = perm === "granted";
+        }
+        savePrefs();
+        renderNotifyBtn();
+      });
+      renderNotifyBtn();
+
+      // Tab title: the run's label (task file name) tells parallel runs apart;
+      // a state needing attention is prefixed with its mark.
+      let runLabel = "";
+      function renderTitle(state) {
+        const a = state ? ATTENTION[state.state] : null;
+        const name = runLabel || "research-loop";
+        if (a) document.title = `${a.mark} ${a.title} · ${name}`;
+        else document.title = state?.currentGoalId ? `${name} · ${state.currentGoalId}` : name;
+      }
+      function setRunLabel(label) {
+        if (!label || label === runLabel) return;
+        runLabel = label;
+        document.getElementById("run-label").textContent = label;
+        document.getElementById("run-label").title = label;
+        renderTitle(currentState);
+      }
+
+      let lastSeenState; // undefined until the first state update
+      function updateAttention(state) {
+        const a = ATTENTION[state.state] || null;
+        faviconLink.href = faviconUri(a?.badge || null);
+        renderTitle(state);
+        const entered = state.state !== lastSeenState;
+        const firstUpdate = lastSeenState === undefined;
+        lastSeenState = state.state;
+        if (!entered) return;
+        // The approval controls live in the Task/Goals pane: make sure they show
+        // (without overwriting the viewer's saved collapsed preference).
+        if (state.state === "AWAITING_HUMAN") setPaneCollapsed("goals-pane", false, false);
+        // Notify only on a live transition (not on page load), when unfocused.
+        if (a && !firstUpdate && notifyEnabled() && !document.hasFocus()) {
+          try {
+            const n = new Notification(`research-loop: ${a.title}`, {
+              body: a.body(state),
+              icon: faviconUri(a.badge),
+              tag: "research-loop-state",
+            });
+            n.onclick = () => {
+              window.focus();
+              n.close();
+            };
+          } catch {
+            // ignore
+          }
+        }
+      }
+
       function updateState(state) {
         currentState = state;
+        updateAttention(state);
         document.getElementById("state").textContent = state.state || "?";
         document.getElementById("state").className = "badge state " + (state.state || "");
         document.getElementById("goal").textContent = state.currentGoalId || "-";
@@ -936,7 +1263,10 @@
         };
         fetch("/api/task?token=" + encodeURIComponent(TOKEN))
           .then((r) => r.json())
-          .then((d) => showTask((d && d.task) || fallbackTask || ""))
+          .then((d) => {
+            setRunLabel(d?.label);
+            showTask((d && d.task) || fallbackTask || "");
+          })
           .catch(() => showTask(fallbackTask || ""));
       }
       refreshTask();
@@ -956,8 +1286,7 @@
           // so a reconnect cannot duplicate entries.
           timeline.innerHTML = "";
           streams.clear();
-          overview.innerHTML = "";
-          overviewItems = [];
+          resetOverview();
           for (const entry of msg.entries || []) addEntry(entry, false);
           scrollToBottom();
           updateActiveOverview();
@@ -1021,6 +1350,8 @@
             panel.style.width = `${w}px`;
           };
           const up = () => {
+            (prefs.panes[panelId] ||= {}).width = Math.round(panel.getBoundingClientRect().width);
+            savePrefs();
             divider.classList.remove("dragging");
             document.body.style.userSelect = "";
             window.removeEventListener("pointermove", move);
@@ -1032,6 +1363,40 @@
       }
       makeResizer("resize-goals", "goals-pane", 240, 1);
       makeResizer("resize-overview", "overview-wrap", 180, -1);
+
+      // --- collapsible side panes (state + widths remembered per browser) ---
+      const PANES = {
+        "goals-pane": { divider: "resize-goals", collapse: "«", expand: "»" },
+        "overview-wrap": { divider: "resize-overview", collapse: "»", expand: "«" },
+      };
+      prefs.panes ||= {};
+      function setPaneCollapsed(id, collapsed, persist = true) {
+        const pane = document.getElementById(id);
+        const cfg = PANES[id];
+        pane.classList.toggle("collapsed", collapsed);
+        document.getElementById(cfg.divider).classList.toggle("hidden", collapsed);
+        const btn = pane.querySelector(".collapse-btn");
+        btn.textContent = collapsed ? cfg.expand : cfg.collapse;
+        btn.title = collapsed ? "Expand" : "Collapse";
+        if (persist) {
+          (prefs.panes[id] ||= {}).collapsed = collapsed;
+          savePrefs();
+        }
+      }
+      for (const id of Object.keys(PANES)) {
+        const pane = document.getElementById(id);
+        const saved = prefs.panes[id] || {};
+        if (saved.width > 0) pane.style.width = `${saved.width}px`;
+        pane.querySelector(".collapse-btn").addEventListener("click", (e) => {
+          e.stopPropagation();
+          setPaneCollapsed(id, !pane.classList.contains("collapsed"));
+        });
+        // The whole collapsed rail expands the pane.
+        pane.addEventListener("click", () => {
+          if (pane.classList.contains("collapsed")) setPaneCollapsed(id, false);
+        });
+        setPaneCollapsed(id, Boolean(saved.collapsed), false);
+      }
     </script>
   </body>
 </html>

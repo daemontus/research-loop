@@ -23,11 +23,12 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { AgentSession } from "./lib/agent-runner.mjs";
+import { clientSessionId } from "./lib/client-identity.mjs";
 import { createBrokerClient } from "./lib/broker-client.mjs";
 import { createPartialStreamer } from "./lib/partial-stream.mjs";
 import { bindControlTools, advisorControlToolDefs, researcherControlToolDefs } from "./lib/control-tools.mjs";
 import { modelSupportsImages } from "./lib/model-capabilities.mjs";
-import { buildModels, resolveModel, assertProviderConfigured } from "./lib/model-providers.mjs";
+import { buildModels, parseModelSpec, resolveModel, assertProviderConfigured } from "./lib/model-providers.mjs";
 import { buildAdvisorPrompt, buildResearcherPrompt } from "./lib/prompts.mjs";
 import { renderInbound } from "./lib/protocol.mjs";
 import { scanSkills, renderInstalledSkills } from "./lib/skills.mjs";
@@ -113,11 +114,14 @@ async function main() {
     configPath: job.configPath || null,
     provider: job.provider || null,
     apiKey: job.apiKey || null,
+    providerId: parseModelSpec(job.model).providerId || null,
+    extraModels: job.extraModels || null,
     faux: job.faux || null,
   });
   const resolved = resolveModel(models, job.model);
   if (resolved.error) throw new Error(resolved.error);
-  const model = resolved.model;
+  // CLI context/output overrides for built-in catalog models.
+  const model = job.modelLimits ? { ...resolved.model, ...job.modelLimits } : resolved.model;
   await assertProviderConfigured(models, model);
 
   const transcriptPath =
@@ -173,6 +177,7 @@ async function main() {
     maxTurnsPerPhase: job.maxTurnsPerPhase ?? 1000,
     abortTimeoutMs: job.abortTimeoutMs ?? 0,
     phaseTimeoutMs: job.phaseTimeoutMs ?? 0,
+    clientSessionId: clientSessionId(job.sessionId || "", role),
   });
   await session.start();
 

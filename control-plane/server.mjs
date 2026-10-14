@@ -108,6 +108,7 @@ class TranscriptTailer {
  * @param {object} opts
  * @param {string} opts.token
  * @param {string} opts.task
+ * @param {string} [opts.label] short run name shown in the WebUI title/header
  * @param {string} opts.transcriptDir
  * @param {string} opts.sessionId
  * @param {string} [opts.host]   bind address (default 127.0.0.1)
@@ -247,7 +248,7 @@ export function startControlPlane(opts) {
       }
 
       if (route === "GET /api/task") {
-        sendJson(res, 200, { ok: true, task: opts.task ?? "" });
+        sendJson(res, 200, { ok: true, task: opts.task ?? "", label: opts.label ?? "" });
         return;
       }
 

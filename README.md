@@ -108,15 +108,24 @@ has three panes:
 - **Transcript** (middle) — the full, chronological transcript. It always shows
   the complete history: on (re)connect the server replays every entry read from
   disk, sorted by time, then streams live updates over SSE. Message content is
-  collapsed to 5 lines with a "Show more" toggle; reasoning and tool-call
-  arguments are collapsible; handoff payloads (plans, acceptance criteria,
-  required changes, feedback, ...) render as structured fields rather than raw
-  JSON. A search box filters entries by text; the left/right side panels can be
-  resized by dragging the dividers.
+  collapsed to 5 lines with a "Show more" toggle; agent messages, handoff text
+  and summaries/feedback render as Markdown (tool output stays monospace);
+  reasoning and tool-call arguments are collapsible; handoff payloads (plans,
+  acceptance criteria, required changes, feedback, ...) render as structured
+  fields rather than raw JSON. A toolbar above it searches entries by text and
+  filters them by author.
 - **Overview** (right) — one clickable item per high-level phase (plan
   proposed/approved/changed, result submitted/accepted/changed, task completion,
-  human decisions). Clicking scrolls the transcript to that phase and highlights
-  it; the current phase is highlighted as you scroll.
+  human decisions), grouped into sections: setup, one per goal (titled from its
+  plan, with a live status: planning / in progress / result in review / changes
+  requested / done), and task completion. The pane header counts goals done.
+  Clicking an item scrolls the transcript to it and highlights it; the current
+  phase is highlighted as you scroll; section headers collapse.
+
+Both side panes can be resized by dragging the dividers and collapsed to a thin
+rail («/»); sizes and collapsed state are remembered per browser. When the run
+awaits your approval, the Task/Goals pane (which holds the approval controls)
+opens automatically.
 
 While an agent is generating, its thinking and response stream into a dashed
 "streaming" preview bubble as tokens arrive from the provider (tool calls show
@@ -127,9 +136,17 @@ writes them to disk, so transcripts, resume and stats are unaffected. Reloading
 the page mid-message drops that message's preview (the finished message still
 appears). Providers that do not stream show the text in one or a few chunks.
 
-The header shows live totals (handoffs, tokens consumed, who the state machine
-expects to act next) and a per-agent **liveness** indicator ("active", "idle
-N m", or "offline"). Liveness is informational only — there are no heartbeat
+The header shows the run's label (the `--task-file` name, else the run
+directory's name; also the browser tab title, to tell parallel runs apart), live
+totals (handoffs, tokens consumed — hover for the in/out/cached breakdown, who
+the state machine expects to act next) and a per-agent **liveness** indicator
+("active", "idle N m", "offline", or "finished").
+
+When the run needs you or ends, the tab title and favicon change ("● Needs your
+approval", "✓ Finished", "✗ Aborted", with a yellow/green/red badge). The bell
+button enables desktop notifications for the same events while the tab is not
+focused; browsers only allow these on `localhost`/`127.0.0.1` (or HTTPS), so the
+button is hidden when the UI is opened through a LAN IP. Liveness is informational only — there are no heartbeat
 timeouts, so an agent may legitimately "think" or run a tool for hours without
 being killed.
 
@@ -355,11 +372,50 @@ Providers use the same format as `biodivine-model-sniffer/pi_config.json`:
 }
 ```
 
-Every model's provider must have an entry in `pi_config.json` (an env var alone
-is not enough). Its key is resolved from (in order) the provider's `apiKeyEnv`,
-the conventional env var for that provider id (e.g. `OPENAI_API_KEY` for an
-`openai` entry), then `~/.pi/agent/auth.json` (or `PI_AUTH_FILE` / `PI_AUTH_PATH`). `localhost` base URLs are rewritten to
+For a provider listed in `pi_config.json`, the key is resolved from (in order)
+the provider's `apiKeyEnv`, the conventional env var for that provider id (e.g.
+`OPENAI_API_KEY` for an `openai` entry), then `~/.pi/agent/auth.json` (or
+`PI_AUTH_FILE` / `PI_AUTH_PATH`). `localhost` base URLs are rewritten to
 `host.docker.internal` for Docker runs.
+
+A provider *not* listed in `pi_config.json` is looked up in pi-ai's built-in
+catalog (e.g. `opencode-go`, `opencode`, `anthropic`, `openrouter`), with its
+models' context/output limits taken from the catalog (`--*-context-window` /
+`--*-max-tokens` still override them). Its key comes from `auth.json` or the
+provider's standard env var. The orchestrator resolves the key on the host and
+passes it to the agents, so it does not need to be set inside the containers.
+
+### OpenCode Go
+
+```bash
+export OPENCODE_API_KEY=...
+node orchestrator/run.mjs --task "..." \
+  --researcher-model opencode-go:deepseek-v4-flash::high \
+  --advisor-model opencode-go:minimax-m3
+```
+
+Only models in the installed pi-ai catalog are known (`node -e` on
+`node_modules/@earendil-works/pi-ai/dist/providers/data/opencode-go.json` lists
+them). To use a newer model before pi-ai ships it, add it to the built-in
+provider in `pi_config.json` (no `baseUrl`), cloning a similar catalog model's
+settings with `like`; other fields override the clone:
+
+```json
+{ "id": "opencode-go", "models": [
+  { "id": "deepseek-v4.1-flash", "like": "deepseek-v4-flash", "input": ["text", "image"] }
+] }
+```
+
+Such an entry only adds models; the rest of the catalog stays available. The
+orchestrator resolves the definition on the host and passes it to the agents.
+
+OpenCode requires harnesses to identify themselves, so every request to an
+OpenCode model (provider `opencode`/`opencode-go`, or any base URL on
+`opencode.ai`) carries `User-Agent: research-loop/<version>`,
+`x-opencode-client: research-loop`, and `x-opencode-session: <uuid>`. The session
+id is derived from the run id and the role (one per agent, stable across
+`--resume`). Other providers keep pi-ai's default `pi (...)` User-Agent. See
+`agent/lib/client-identity.mjs`.
 
 ## Repository layout
 
@@ -380,6 +436,7 @@ agent/
     skills.mjs             # skill index loader
     broker-client.mjs      # HTTP long-poll client
     partial-stream.mjs     # live thinking/text streaming to the WebUI
+    client-identity.mjs    # provider-required identification (OpenCode headers)
 control-plane/
   server.mjs               # HTTP + SSE + static UI
   broker.mjs               # inboxes, routing, session logging
@@ -420,10 +477,11 @@ pi-ai's `fauxProvider`, with no network access.
 ## Troubleshooting
 
 - **`Provider is not configured` / session aborts immediately.** The selected
-  model's provider had no usable credential. The provider must be listed in
-  `pi_config.json`, and its key must come from its `apiKeyEnv` (e.g.
-  `OLLAMA_EINFRA_API_KEY`), the conventional env var for that provider id, or
-  an entry in `~/.pi/agent/auth.json`. The orchestrator fails at startup
+  model's provider had no usable credential. A `pi_config.json` provider needs
+  its `apiKeyEnv` (e.g. `OLLAMA_EINFRA_API_KEY`), the conventional env var for
+  that provider id, or an entry in `~/.pi/agent/auth.json`; a built-in catalog
+  provider (e.g. `opencode-go`) needs its standard env var (`OPENCODE_API_KEY`)
+  or an `auth.json` entry, and the model id must exist in the catalog. The orchestrator fails at startup
   if it cannot resolve a key; the container also refuses to start without one.
 - **A phase produces no handoff.** The harness nudges the model up to 3 times to
   end its turn with a control tool; if it still fails, or the provider errors,

@@ -5,11 +5,17 @@
  *   2. built-in provider env var (e.g. ANTHROPIC_API_KEY)
  *   3. Pi auth.json (~/.pi/agent/auth.json or PI_AUTH_FILE / PI_AUTH_PATH)
  *
+ * Providers not listed in pi_config.json fall back to pi-ai's built-in catalog
+ * (e.g. `opencode-go`, `anthropic`), authenticated by auth.json or the
+ * provider's standard env var (e.g. OPENCODE_API_KEY).
+ *
  * localhost base URLs are rewritten to host.docker.internal for container access.
  */
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+
+import { buildModels, parseModelSpec } from "../agent/lib/model-providers.mjs";
 
 const PROVIDER_ENV_MAP = {
   openrouter: "OPENROUTER_API_KEY",
@@ -63,16 +69,62 @@ export function loadConfig(configPath) {
   }
 }
 
+function readAuthEntry(providerId) {
+  const file = authPath();
+  if (!file) return null;
+  try {
+    return authEntryApiKey(JSON.parse(fs.readFileSync(file, "utf8"))?.[providerId]);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Credentials for a model from pi-ai's built-in provider catalog (optionally
+ * extended by pi_config.json, see builtinExtensionModels). `provider` is null:
+ * the agent resolves the model from the same catalog; a model that only exists
+ * through pi_config.json is passed along as `extraModel`.
+ *
+ * @returns {Promise<{ providerId, apiKey, provider: null, builtin: true, extraModel? } | { error: string }>}
+ */
+async function resolveBuiltinCredentials(providerId, modelId, configPath) {
+  const { models } = buildModels({ configPath });
+  if (!models.getProvider(providerId)) {
+    return { error: `unknown provider '${providerId}' (not in pi_config.json or pi-ai's catalog)` };
+  }
+  const model = models.getModel(providerId, modelId);
+  if (!model) {
+    const known = models.getModels(providerId).map((m) => m.id);
+    return {
+      error:
+        `model '${modelId}' is not in pi-ai's '${providerId}' catalog. Known: ${known.join(", ")}. ` +
+        `To use a newer model, add to pi_config.json: ` +
+        `{ "id": "${providerId}", "models": [{ "id": "${modelId}", "like": "<similar known model>" }] }`,
+    };
+  }
+  const apiKey = (await models.getAuth(model))?.auth?.apiKey;
+  if (!apiKey) {
+    return { error: `no API key for provider '${providerId}' (set its env var, e.g. OPENCODE_API_KEY, or auth.json)` };
+  }
+  const { models: plain } = buildModels({});
+  const extraModel = plain.getModel(providerId, modelId) ? undefined : model;
+  return { providerId, apiKey, provider: null, builtin: true, extraModel };
+}
+
 /**
  * @param {string} model "provider:model::effort"
  * @param {string|null} configPath
- * @returns {{ provider: object, apiKey: string, providerId: string } | null}
+ * @returns {Promise<{ provider: object|null, apiKey: string, providerId: string, builtin?: boolean, extraModel?: object } | { error: string } | null>}
  */
-export function resolveCredentials(model, configPath) {
+export async function resolveCredentials(model, configPath) {
   if (!String(model).includes(":")) return null;
   const providerId = String(model).split(":", 1)[0];
   const config = loadConfig(configPath);
   const provider = (config.providers || []).find((p) => p && p.id === providerId) || null;
+  if (!provider || !provider.baseUrl) {
+    const { modelId } = parseModelSpec(model);
+    return resolveBuiltinCredentials(providerId, modelId, configPath);
+  }
 
   let apiKey = null;
   const apiKeyEnv = provider?.apiKeyEnv;
@@ -83,19 +135,9 @@ export function resolveCredentials(model, configPath) {
     const envName = PROVIDER_ENV_MAP[providerId];
     if (envName && process.env[envName]) apiKey = process.env[envName];
   }
-  if (!apiKey) {
-    const file = authPath();
-    if (file) {
-      try {
-        const data = JSON.parse(fs.readFileSync(file, "utf8"));
-        apiKey = authEntryApiKey(data?.[providerId]);
-      } catch {
-        // ignore
-      }
-    }
-  }
+  if (!apiKey) apiKey = readAuthEntry(providerId);
 
-  if (!provider || !apiKey) return null;
+  if (!apiKey) return null;
   return { providerId, apiKey, provider };
 }
 
@@ -151,12 +193,6 @@ export async function discoverModelLimits(provider, modelId, apiKey, { timeoutMs
   } finally {
     clearTimeout(timer);
   }
-}
-
-/** A provider-free spec (built-in provider available in pi-ai's builtinModels). */
-export function hasBuiltinProvider(model) {
-  const id = String(model).split(":", 1)[0];
-  return Object.prototype.hasOwnProperty.call(PROVIDER_ENV_MAP, id);
 }
 
 export { PROVIDER_ENV_MAP };

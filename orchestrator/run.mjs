@@ -215,6 +215,7 @@ function readRunMeta(runDir) {
     researcherModel: meta.researcherModel || run.researcherModel || null,
     advisorModel: meta.advisorModel || run.advisorModel || null,
     skipSkills: Boolean(meta.skipSkills ?? run.skipSkills ?? start.skipSkills),
+    label: meta.label || run.label || "",
     state: meta.state || null,
     uiUrl: meta.uiUrl || "",
   };
@@ -376,7 +377,21 @@ function applyModelLimits(provider, modelSpec, limits) {
  */
 async function resolveRoleProvider(creds, modelSpec, { contextWindow, maxTokens, discover }) {
   let provider = creds.provider;
-  if (!provider) return { provider: null, note: null };
+  if (!provider) {
+    // Built-in catalog model: its limits come from the catalog; CLI overrides
+    // are applied by the agent (job.modelLimits).
+    const modelLimits = {};
+    if (Number(contextWindow) > 0) modelLimits.contextWindow = Number(contextWindow);
+    if (Number(maxTokens) > 0) modelLimits.maxTokens = Number(maxTokens);
+    const overridden = Object.keys(modelLimits).length > 0;
+    return {
+      provider: null,
+      modelLimits: overridden ? modelLimits : null,
+      note: overridden
+        ? `override contextWindow=${contextWindow ?? "?"} maxTokens=${maxTokens ?? "?"}`
+        : null,
+    };
+  }
 
   const before = (provider.models || []).find((m) => m && m.id === modelIdOnly(modelSpec)) || {};
   let note = null;
@@ -451,6 +466,11 @@ async function main() {
       "no task available for this run; pass --task (or --task-file) to provide one",
     );
   }
+  // Short run name for the WebUI tab title/header, to tell parallel runs apart:
+  // the task file's name, else the original run's label, else the run dir.
+  const label = args.taskFile
+    ? path.basename(args.taskFile, path.extname(args.taskFile))
+    : runMeta?.label || path.basename(runDir);
   if (viewing && runMeta.state && !["DONE", "ABORTED"].includes(runMeta.state.state)) {
     console.warn(`[research-loop] note: session was ${runMeta.state.state}, not finished; showing its current state.`);
   }
@@ -487,6 +507,7 @@ async function main() {
     const control = await startControlPlane({
       token,
       task: args.task,
+      label,
       transcriptDir,
       sessionId,
       goalsPath,
@@ -521,16 +542,18 @@ async function main() {
     researcherCreds = { provider: null, apiKey: null };
     advisorCreds = { provider: null, apiKey: null };
   } else {
-    researcherCreds = resolveCredentials(args.researcherModel, configPath);
-    advisorCreds = resolveCredentials(args.advisorModel, configPath);
-    if (!researcherCreds) {
+    researcherCreds = await resolveCredentials(args.researcherModel, configPath);
+    advisorCreds = await resolveCredentials(args.advisorModel, configPath);
+    if (!researcherCreds || researcherCreds.error) {
       throw new Error(
-        `No credentials for researcher model ${args.researcherModel}. Check pi_config.json and env/auth.json.`,
+        `Cannot use researcher model ${args.researcherModel}: ` +
+          (researcherCreds?.error || "check pi_config.json and env/auth.json."),
       );
     }
-    if (!advisorCreds) {
+    if (!advisorCreds || advisorCreds.error) {
       throw new Error(
-        `No credentials for advisor model ${args.advisorModel}. Check pi_config.json and env/auth.json.`,
+        `Cannot use advisor model ${args.advisorModel}: ` +
+          (advisorCreds?.error || "check pi_config.json and env/auth.json."),
       );
     }
   }
@@ -575,6 +598,7 @@ async function main() {
     JSON.stringify(
       {
         sessionId,
+        label,
         task: args.task,
         researcherModel: args.researcherModel,
         advisorModel: args.advisorModel,
@@ -588,6 +612,7 @@ async function main() {
   const control = await startControlPlane({
     token,
     task: args.task,
+    label,
     transcriptDir,
     sessionId,
     goalsPath,
@@ -656,6 +681,8 @@ async function main() {
         ? path.join(transcriptDir, "researcher.jsonl")
         : "/transcripts/researcher.jsonl",
       provider: researcherLimits.provider,
+      modelLimits: researcherLimits.modelLimits || undefined,
+      extraModels: researcherCreds?.extraModel ? [researcherCreds.extraModel] : undefined,
       apiKey: researcherCreds?.apiKey ?? null,
       faux: fauxResearcher || undefined,
     },
@@ -670,6 +697,8 @@ async function main() {
         ? path.join(transcriptDir, "advisor.jsonl")
         : "/transcripts/advisor.jsonl",
       provider: advisorLimits.provider,
+      modelLimits: advisorLimits.modelLimits || undefined,
+      extraModels: advisorCreds?.extraModel ? [advisorCreds.extraModel] : undefined,
       apiKey: advisorCreds?.apiKey ?? null,
       faux: fauxAdvisor || undefined,
       extraRoots: [
@@ -855,6 +884,7 @@ async function main() {
 
   const summary = {
     sessionId,
+    label,
     task: args.task,
     researcherModel: args.researcherModel,
     advisorModel: args.advisorModel,

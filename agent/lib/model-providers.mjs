@@ -121,6 +121,45 @@ function providerModelsList(providerDef) {
 }
 
 /**
+ * Model definitions that pi_config.json adds to a *built-in* provider (an entry
+ * whose id is a catalog provider such as "opencode-go" and that has no
+ * `baseUrl`). Lets a newer model be used before pi-ai's catalog knows it:
+ * `{ "id": "new-model", "like": "known-model" }` clones a catalog model (api,
+ * baseUrl, compat, limits, ...) under the new id; other fields override.
+ * Models the catalog already has are skipped. Throws on an unknown `like`.
+ *
+ * @returns {object[]} full pi-ai model objects
+ */
+export function builtinExtensionModels(models, providerDef) {
+  const builtin = models.getProvider(providerDef?.id);
+  if (!builtin || providerDef.baseUrl) return [];
+  const catalog = builtin.getModels();
+  const extra = [];
+  for (const entry of providerDef.models || []) {
+    if (!entry?.id || catalog.some((m) => m.id === entry.id)) continue;
+    const { like, ...overrides } = entry;
+    const template = like ? catalog.find((m) => m.id === like) : null;
+    if (!template) {
+      throw new Error(
+        `pi_config.json: model '${providerDef.id}:${entry.id}' is not in pi-ai's catalog; ` +
+          `add "like": "<a ${providerDef.id} catalog model>" to clone its settings`,
+      );
+    }
+    extra.push({ ...template, name: overrides.name || entry.id, ...overrides, provider: builtin.id });
+  }
+  return extra;
+}
+
+/** Add full model definitions to a built-in provider (keeps its catalog). */
+export function extendBuiltinProvider(models, providerId, extraModels) {
+  const builtin = models.getProvider(providerId);
+  if (!builtin || !extraModels?.length) return;
+  const extended = Object.create(builtin);
+  extended.getModels = () => [...builtin.getModels(), ...extraModels];
+  models.setProvider(extended);
+}
+
+/**
  * True when the model has no positive output-token cap configured. We treat
  * absence, 0 and negative sentinels (e.g. "-1") as "unlimited".
  */
@@ -159,15 +198,27 @@ export function stripMaxTokensOnPayload(existing) {
  * @param {object} opts
  * @param {string|null} [opts.configPath] path to pi_config.json
  * @param {object} [opts.provider] single provider def to inject (reference style)
- * @param {string} [opts.apiKey] api key for opts.provider
+ * @param {string} [opts.apiKey] api key for opts.provider (or for opts.providerId)
+ * @param {string} [opts.providerId] provider the api key belongs to when there is
+ *   no provider def (a model from pi-ai's built-in catalog, e.g. `opencode-go`)
+ * @param {object[]} [opts.extraModels] full model defs to add to `providerId`'s
+ *   built-in catalog (resolved by the orchestrator from pi_config.json)
  * @param {object} [opts.faux]
  */
-export function buildModels({ configPath = null, provider = null, apiKey = null, faux = null } = {}) {
+export function buildModels({
+  configPath = null,
+  provider = null,
+  apiKey = null,
+  providerId = null,
+  extraModels = null,
+  faux = null,
+} = {}) {
   const config = loadProviderConfig(configPath);
   const credentials = loadAuth(config);
 
-  if (provider?.id && apiKey) {
-    credentials[provider.id] = apiKey;
+  const keyOwner = provider?.id || providerId;
+  if (keyOwner && apiKey) {
+    credentials[keyOwner] = apiKey;
   }
   for (const providerDef of config.providers || []) {
     if (!providerDef?.id) continue;
@@ -217,7 +268,14 @@ export function buildModels({ configPath = null, provider = null, apiKey = null,
   };
 
   if (provider) registerProvider(provider);
-  for (const providerDef of config.providers || []) registerProvider(providerDef);
+  for (const providerDef of config.providers || []) {
+    if (models.getProvider(providerDef?.id) && !providerDef.baseUrl) {
+      extendBuiltinProvider(models, providerDef.id, builtinExtensionModels(models, providerDef));
+    } else {
+      registerProvider(providerDef);
+    }
+  }
+  if (providerId && extraModels?.length) extendBuiltinProvider(models, providerId, extraModels);
 
   return { models, credentials };
 }

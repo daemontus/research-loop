@@ -28,6 +28,7 @@ import {
 import { hasUnlimitedMaxTokens, stripMaxTokensOnPayload } from "./model-providers.mjs";
 import fs from "node:fs";
 import path from "node:path";
+import { providerRequestHeaders } from "./client-identity.mjs";
 import { streamAgentEvent } from "./partial-stream.mjs";
 
 const DEFAULT_MAX_ABORT_RETRIES = 5;
@@ -78,6 +79,8 @@ export class AgentSession {
     this.transcript = opts.transcript;
     // Optional live display of in-progress output (see partial-stream.mjs).
     this.partialStreamer = opts.partialStreamer || null;
+    // Provider-facing session id (e.g. OpenCode's x-opencode-session).
+    this.clientSessionId = opts.clientSessionId || null;
     this.thinkingLevel = opts.thinkingLevel || "off";
     // 0 = unlimited turns per phase.
     this.maxTurnsPerPhase = opts.maxTurnsPerPhase ?? 1000;
@@ -148,6 +151,11 @@ export class AgentSession {
         // context window is unknown; drop the cap so the provider decides.
         if (hasUnlimitedMaxTokens(model)) {
           merged.onPayload = stripMaxTokensOnPayload(merged.onPayload);
+        }
+        // Provider-required identification (OpenCode session/client headers).
+        const extraHeaders = providerRequestHeaders(model, session.clientSessionId);
+        if (Object.keys(extraHeaders).length) {
+          merged.headers = { ...extraHeaders, ...merged.headers };
         }
         return session.models.streamSimple(model, context, merged);
       },
