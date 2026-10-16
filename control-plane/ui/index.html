@@ -279,6 +279,32 @@
       .md a { color: var(--researcher); }
       .md hr { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
       .md img { max-width: 100%; }
+      /* Agent tree (root session + subagents). */
+      #agents-pane { width: 230px; min-width: 160px; }
+      #agents-pane .side-head label { font-weight: 400; font-size: 11px; color: var(--muted); display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+      #agent-tree { flex: 1; overflow-y: auto; padding: 8px 6px; font-size: 12px; }
+      #agent-tree ul { list-style: none; margin: 0; padding-left: 14px; border-left: 1px dashed var(--border); }
+      #agent-tree > ul { padding-left: 0; border-left: none; }
+      #agent-tree li { margin: 2px 0; }
+      .agent-node {
+        display: flex; align-items: center; gap: 6px; width: 100%; text-align: left; padding: 4px 6px;
+        background: none; border: 1px solid transparent; border-radius: 6px; color: var(--text); font: inherit; cursor: pointer;
+      }
+      .agent-node:hover { background: var(--panel2); border-color: var(--border); }
+      .agent-node.selected { background: #202a3d; border-color: #3d4757; }
+      .agent-node .an-id { font-weight: 700; flex: none; }
+      .agent-node .an-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+      .agent-node.selected .an-title { color: var(--text); }
+      .agent-node .dot { flex: none; }
+      .agent-node .an-state { flex: none; font-size: 10px; color: var(--muted); }
+      #view-agent { color: var(--text); }
+      .open-agent { margin-top: 8px; font-size: 12px; padding: 3px 10px; }
+      #agent-info { padding: 12px 14px; border-bottom: 1px solid var(--border); font-size: 13px; line-height: 1.55; }
+      #agent-info:empty { display: none; }
+      #agent-info .ai-head { font-weight: 600; margin-bottom: 4px; }
+      #agent-info .ai-sub { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+      #agent-info h4 { font-size: 12px; margin: 10px 0 4px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+      #agent-info .md code { font-size: 12px; }
     </style>
   </head>
   <body>
@@ -289,6 +315,7 @@
       <span class="stat" title="handoffs between the agents"><b id="handoffs">0</b> handoffs</span>
       <span class="stat" id="tok-stat"><b id="tok-total">0</b> tokens</span>
       <span class="stat" title="who the state machine expects to act next">next <b id="expecting">-</b></span>
+      <span class="stat" id="active-stat" title="the agent session currently working" hidden>active <b id="active-agent">-</b></span>
       <span class="stat agent-live"><i class="dot" id="dot-researcher"></i>researcher <b id="live-researcher" class="live">offline</b></span>
       <span class="stat agent-live"><i class="dot" id="dot-advisor"></i>advisor <b id="live-advisor" class="live">offline</b></span>
       <span class="header-tools">
@@ -298,9 +325,15 @@
       </span>
     </header>
     <main>
+      <aside id="agents-pane" class="pane">
+        <div class="side-head"><span class="side-title">Agents</span><label title="Switch to whichever agent is working"><input type="checkbox" id="follow-active" checked />follow</label><button class="collapse-btn" type="button"></button></div>
+        <div id="agent-tree"></div>
+      </aside>
+      <div class="divider" id="resize-agents" title="Drag to resize"></div>
       <aside id="goals-pane" class="pane">
-        <div class="side-head"><span class="side-title">Task / Goals</span><button class="collapse-btn" type="button"></button></div>
+        <div class="side-head"><span class="side-title">Task / Goals <span id="view-agent"></span></span><button class="collapse-btn" type="button"></button></div>
         <div id="pane-scroll">
+          <div id="agent-info"></div>
           <div id="task"><div class="muted-note">(loading…)</div></div>
           <div id="goals"><div class="muted-note">(not yet written)</div></div>
         </div>
@@ -375,6 +408,27 @@
       let overviewItems = [];
       let searchQuery = "";
       let currentState = null;
+
+      // --- agent sessions (root + subagents) ------------------------------
+      // Every transcript entry carries the agentId of the session it belongs
+      // to (absent = the root session). The timeline, overview, goals and
+      // composer show one agent at a time; the tree pane switches between them.
+      const ROOT = "root";
+      let selectedAgent = ROOT;
+      let followActive = true;
+      let allEntries = [];
+      let agentsById = new Map();
+      const agentOf = (entry) => entry.agentId || ROOT;
+      /** Entries shown in an agent's view: its own, plus its children's start/finish. */
+      function entryVisibleFor(entry, id) {
+        if (agentOf(entry) === id) return true;
+        return (entry.kind === "subagent_start" || entry.kind === "subagent_done") && entry.parentId === id;
+      }
+      function agentLabel(id) {
+        if (id === ROOT) return "main";
+        const a = agentsById.get(id);
+        return a?.title ? `${id} · ${a.title}` : id;
+      }
       const tokens = { researcher: { in: 0, out: 0, cache: 0, reasoning: 0 }, advisor: { in: 0, out: 0, cache: 0, reasoning: 0 } };
       const lastActivity = { researcher: null, advisor: null };
 
@@ -517,6 +571,7 @@
           ["summary", "Summary"],
           ["feedback", "Feedback"],
           ["rationale", "Rationale"],
+          ["instructions", "Instructions"],
         ]) {
           if (typeof payload[k] === "string" && payload[k].trim()) {
             parts.push(`<div class="field"><span class="k">${label}</span><div class="md">${renderMarkdown(payload[k], true)}</div></div>`);
@@ -535,6 +590,7 @@
           ["blockers", "Blockers"],
           ["caveats", "Caveats"],
           ["unfinished", "Unfinished"],
+          ["expectedOutputs", "Expected outputs"],
         ]) {
           if (Array.isArray(payload[k]) && payload[k].length) {
             parts.push(`<div class="field"><span class="k">${label}</span>${list(payload[k])}</div>`);
@@ -726,6 +782,9 @@
         result_changes: "requested result changes",
         task_accepted: "accepted task completion",
         task_changes: "requested task changes",
+        subagent_proposal: "proposed a subagent",
+        subagent_approved: "approved the subagent",
+        subagent_changes: "rejected the subagent",
       };
 
       // Overview items are grouped into chronological sections: setup (start,
@@ -822,6 +881,17 @@
           who = "control";
           label = `aborted: ${entry.reason || ""}`;
           sectionKind = "completion";
+        } else if (entry.kind === "subagent_start") {
+          who = "control";
+          label = agentOf(entry) === selectedAgent
+            ? `subagent started: ${entry.meta?.title || ""}`
+            : `started subagent ${agentOf(entry)}: ${entry.meta?.title || ""}`;
+        } else if (entry.kind === "subagent_done") {
+          who = "control";
+          label = agentOf(entry) === selectedAgent ? "subagent finished (report sent)" : `subagent ${agentOf(entry)} reported back`;
+        } else if (entry.kind === "protected_restored") {
+          who = "control";
+          label = "protected goals restored";
         }
         if (label === null) return;
 
@@ -877,7 +947,9 @@
         }
       }
 
-      function addEntry(entry, scroll = true) {
+      /** Record an entry (stats, liveness) and render it if the selected agent shows it. */
+      function addEntry(entry, scroll = true, bulk = false, render = true) {
+        allEntries.push(entry);
         // Liveness: any entry an agent wrote counts as recent activity (recorded
         // before render filters, so skipped bookkeeping still refreshes it).
         if (entry.agent === "researcher" || entry.agent === "advisor") {
@@ -889,6 +961,7 @@
         // Task fallback: sessions whose control plane predates the /api/task
         // endpoint still carry the task inside the opening user message.
         if (
+          agentOf(entry) === ROOT &&
           entry.kind === "message" &&
           entry.role === "user" &&
           typeof entry.content === "string" &&
@@ -898,6 +971,10 @@
           fallbackTask = extractTask(entry.content);
           if (fallbackTask) refreshTask();
         }
+        if (render && entryVisibleFor(entry, selectedAgent)) renderEntry(entry, scroll, bulk);
+      }
+
+      function renderEntry(entry, scroll = true, bulk = false) {
         // Agents already record their own inbound/outbound handoffs; the
         // control-plane duplicates would render twice, so skip them here.
         // (They remain in session.jsonl for audit.)
@@ -980,6 +1057,33 @@
             `${entry.to ? " → " + esc(entry.to) : ""}`;
           const text = entry.text && entry.text.trim() ? `<div class="md">${renderMarkdown(entry.text, true)}</div>` : "";
           div.innerHTML = metaHtml("human", entry, `<span>${label}</span>`) + bubble(text);
+        } else if (entry.kind === "subagent_start" || entry.kind === "subagent_done") {
+          const id = agentOf(entry);
+          const started = entry.kind === "subagent_start";
+          let inner = "";
+          if (started) {
+            inner += `<div class="field"><span class="k">Subtask</span><div class="v">${esc(entry.meta?.title || id)}</div></div>`;
+            if (entry.meta?.instructions) {
+              inner += `<div class="field"><span class="k">Instructions</span><div class="md">${renderMarkdown(entry.meta.instructions, true)}</div></div>`;
+            }
+            if (entry.meta?.conditions?.length) {
+              inner += `<div class="field"><span class="k">Conditions</span>${list(entry.meta.conditions)}</div>`;
+            }
+            if (entry.protectedFiles?.length) {
+              inner += `<div class="field"><span class="k">Protected goal files</span>${list(entry.protectedFiles)}</div>`;
+            }
+          } else {
+            inner += `<div class="field"><span class="k">Report</span><div class="md">${renderMarkdown(entry.report || "(empty)")}</div></div>`;
+          }
+          if (id !== selectedAgent) {
+            inner += `<button class="open-agent" type="button" data-open-agent="${esc(id)}">open ${esc(id)} →</button>`;
+          }
+          div.innerHTML =
+            metaHtml("control", entry, `<span>${started ? "subagent started" : "subagent finished"} · ${esc(id)}</span>`) +
+            bubble(inner);
+        } else if (entry.kind === "protected_restored") {
+          const body = `<div class="v">Restored from the start snapshot:</div>${list(entry.files || [])}`;
+          div.innerHTML = metaHtml("control", entry, "<span>protected goals restored</span>") + bubble(body);
         } else if (
           ["state", "start", "reject", "terminal", "closed", "abort"].includes(entry.kind)
         ) {
@@ -999,10 +1103,31 @@
         keepStreamsLast();
         finalizeClamp(div);
         addOverview(entry, div);
+        if (bulk) return;
         applyFilters();
         if (stick) scrollToBottom();
         else latestBtn.hidden = atBottom();
       }
+
+      /** Rebuild the timeline and overview for the selected agent. */
+      function rerenderTimeline() {
+        timeline.innerHTML = "";
+        streams.clear();
+        lastStreamId.researcher = 0;
+        lastStreamId.advisor = 0;
+        resetOverview();
+        for (const entry of allEntries) {
+          if (entryVisibleFor(entry, selectedAgent)) renderEntry(entry, false, true);
+        }
+        applyFilters();
+        scrollToBottom();
+        updateActiveOverview();
+      }
+
+      timeline.addEventListener("click", (e) => {
+        const btn = e.target.closest("[data-open-agent]");
+        if (btn) selectAgent(btn.dataset.openAgent, true);
+      });
 
       // --- live streaming of in-progress assistant output -------------------
       // Preview bubbles fed by `partial` SSE ops (never persisted). Per agent,
@@ -1063,8 +1188,13 @@
         }
       }
 
-      function applyPartial(agent, ops) {
+      function applyPartial(agent, ops, agentId = ROOT) {
         if (agent !== "researcher" && agent !== "advisor") return;
+        // Only the selected agent's conversation is on screen.
+        if ((agentId || ROOT) !== selectedAgent) {
+          lastActivity[agent] = Date.now();
+          return;
+        }
         const stick = atBottom();
         for (const op of ops) {
           const id = Number(op.id) || 0;
@@ -1216,14 +1346,146 @@
         if (state.registered?.advisor && !lastActivity.advisor) lastActivity.advisor = Date.now();
         document.getElementById("approval").classList.toggle("visible", state.state === "AWAITING_HUMAN");
         updateStats(state);
+        updateAgents(state);
+      }
+
+      // --- agent tree -------------------------------------------------------
+      const agentTree = document.getElementById("agent-tree");
+      const followBox = document.getElementById("follow-active");
+      followBox.addEventListener("change", () => {
+        followActive = followBox.checked;
+        if (followActive && currentState?.activeAgent) selectAgent(currentState.activeAgent);
+      });
+
+      function updateAgents(state) {
+        const list = Array.isArray(state.agents) && state.agents.length ? state.agents : [{ id: ROOT, parentId: null, state: state.state }];
+        const prevSelected = agentsById.get(selectedAgent);
+        agentsById = new Map(list.map((a) => [a.id, a]));
+        const active = state.activeAgent || ROOT;
+        const activeStat = document.getElementById("active-stat");
+        activeStat.hidden = active === ROOT;
+        document.getElementById("active-agent").textContent = active === ROOT ? "-" : `${active} · ${state.activeState || ""}`;
+        if (followActive && active !== selectedAgent && agentsById.has(active)) {
+          selectAgent(active);
+          return;
+        }
+        // The selected agent's status changed (e.g. finished): refresh its info.
+        const nowSelected = agentsById.get(selectedAgent);
+        if (selectedAgent !== ROOT && prevSelected?.state !== nowSelected?.state) refreshAgentInfo();
+        renderTree();
+        updateComposer();
+      }
+
+      function agentStatus(a) {
+        if (a.state === "DONE") return { dot: "", text: a.id === ROOT ? "done" : "done" };
+        if (a.state === "ABORTED") return { dot: "", text: "aborted" };
+        if (a.state === "SUBAGENT_RUNNING") return { dot: "idle", text: "waiting" };
+        if (a.state === "AWAITING_HUMAN") return { dot: "idle", text: "needs you" };
+        if (a.active) return { dot: "active", text: a.expecting || "active" };
+        return { dot: "idle", text: a.state || "" };
+      }
+
+      function renderTree() {
+        const children = new Map();
+        for (const a of agentsById.values()) {
+          const p = a.parentId || null;
+          if (!children.has(p)) children.set(p, []);
+          children.get(p).push(a);
+        }
+        const build = (parentId) => {
+          const kids = children.get(parentId) || [];
+          if (!kids.length) return null;
+          const ul = document.createElement("ul");
+          for (const a of kids) {
+            const li = document.createElement("li");
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = `agent-node${a.id === selectedAgent ? " selected" : ""}`;
+            const st = agentStatus(a);
+            btn.title = `${a.id === ROOT ? "Main session" : `Subagent ${a.id}`}${a.title ? `: ${a.title}` : ""}\nstate: ${a.state}`;
+            btn.innerHTML =
+              `<i class="dot ${st.dot}"></i><span class="an-id">${esc(a.id === ROOT ? "main" : a.id)}</span>` +
+              `<span class="an-title">${esc(a.id === ROOT ? "" : a.title || "")}</span>` +
+              `<span class="an-state">${esc(st.text)}</span>`;
+            btn.addEventListener("click", () => selectAgent(a.id, true));
+            li.appendChild(btn);
+            const sub = build(a.id);
+            if (sub) li.appendChild(sub);
+            ul.appendChild(li);
+          }
+          return ul;
+        };
+        agentTree.innerHTML = "";
+        const tree = build(null);
+        if (tree) agentTree.appendChild(tree);
+      }
+
+      function selectAgent(id, manual = false) {
+        if (manual) {
+          followActive = id === (currentState?.activeAgent || ROOT);
+          followBox.checked = followActive;
+        }
+        if (id === selectedAgent) {
+          renderTree();
+          return;
+        }
+        selectedAgent = id;
+        document.getElementById("view-agent").textContent = id === ROOT ? "" : `· ${id}`;
+        rerenderTimeline();
+        renderTree();
+        lastGoalsRaw = null;
+        lastTaskRaw = null;
+        refreshGoals();
+        refreshTask();
+        refreshAgentInfo();
+        updateComposer();
+      }
+
+      function updateComposer() {
+        const a = agentsById.get(selectedAgent);
+        const finished = a && (a.state === "DONE" || a.state === "ABORTED") && selectedAgent !== ROOT;
+        const box = document.getElementById("human-text");
+        box.disabled = Boolean(finished);
+        box.placeholder = finished
+          ? `${selectedAgent} has finished`
+          : `Inject a message to ${agentLabel(selectedAgent)} (any time)…`;
+      }
+
+      function refreshAgentInfo() {
+        const el = document.getElementById("agent-info");
+        const id = selectedAgent;
+        if (id === ROOT) {
+          el.innerHTML = "";
+          el.dataset.raw = "";
+          return;
+        }
+        fetch(`/api/agent?agent=${encodeURIComponent(id)}&token=${encodeURIComponent(TOKEN)}`)
+          .then((r) => r.json())
+          .then((d) => {
+            if (id !== selectedAgent || !d?.agent) return;
+            const raw = JSON.stringify(d.agent);
+            if (raw === el.dataset.raw) return;
+            el.dataset.raw = raw;
+            const a = d.agent;
+            const parent = a.parentId === ROOT ? "main session" : a.parentId;
+            el.innerHTML =
+              `<div class="ai-head">Subagent ${esc(a.id)} · ${esc(a.title || "")}</div>` +
+              `<div class="ai-sub">started by ${esc(parent)} · depth ${esc(a.depth)}${a.goalId ? ` · for ${esc(a.goalId)}` : ""} · ${esc(a.state)}</div>` +
+              `<h4>Instructions</h4><div class="md">${renderMarkdown(a.instructions || "")}</div>` +
+              (a.conditions?.length ? `<h4>Conditions</h4><div class="md">${list(a.conditions)}</div>` : "") +
+              (a.report ? `<h4>Report</h4><div class="md">${renderMarkdown(a.report)}</div>` : "");
+          })
+          .catch(() => {});
       }
 
       let lastGoalsRaw = null;
       let fallbackTask = null;
       function refreshGoals() {
-        fetch("/api/goals?token=" + encodeURIComponent(TOKEN))
+        const id = selectedAgent;
+        fetch(`/api/goals?agent=${encodeURIComponent(id)}&token=${encodeURIComponent(TOKEN)}`)
           .then((r) => r.json())
           .then((d) => {
+            if (id !== selectedAgent) return;
             const raw = d.goals || "";
             if (raw === lastGoalsRaw) return;
             lastGoalsRaw = raw;
@@ -1253,6 +1515,8 @@
       function refreshTask() {
         const showTask = (raw) => {
           const el = document.getElementById("task");
+          // A subagent's subtask is shown in the agent info block instead.
+          el.hidden = selectedAgent !== ROOT;
           if (!raw || !raw.trim()) {
             el.innerHTML = '<div class="muted-note">(no task provided)</div>';
             return;
@@ -1274,6 +1538,7 @@
       setInterval(() => {
         refreshGoals();
         refreshTask();
+        if (selectedAgent !== ROOT) refreshAgentInfo();
       }, 3000);
 
       const es = new EventSource("/api/stream?token=" + encodeURIComponent(TOKEN));
@@ -1284,16 +1549,14 @@
         } else if (msg.type === "history") {
           // Full transcript replay on (re)connect — replace rather than append
           // so a reconnect cannot duplicate entries.
-          timeline.innerHTML = "";
-          streams.clear();
-          resetOverview();
-          for (const entry of msg.entries || []) addEntry(entry, false);
-          scrollToBottom();
-          updateActiveOverview();
+          allEntries = [];
+          for (const k of Object.keys(tokens)) tokens[k] = { in: 0, out: 0, cache: 0, reasoning: 0 };
+          for (const entry of msg.entries || []) addEntry(entry, false, true, false);
+          rerenderTimeline();
         } else if (msg.type === "entry") {
           addEntry(msg.entry, true);
         } else if (msg.type === "partial") {
-          applyPartial(msg.agent, msg.ops || []);
+          applyPartial(msg.agent, msg.ops || [], msg.agentId);
         }
       };
       es.onerror = () => {
@@ -1316,7 +1579,7 @@
         const r = await fetch("/api/human/message?token=" + encodeURIComponent(TOKEN), {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ target, text }),
+          body: JSON.stringify({ target, text, agentId: selectedAgent }),
         });
         if (!r.ok) {
           const e = await r.json().catch(() => ({}));
@@ -1325,7 +1588,11 @@
         }
         const body = await r.json();
         if (body.deferred) {
-          alert(`Held until the ${body.deferredUntil} is expected to act next.`);
+          alert(
+            selectedAgent === (currentState?.activeAgent || ROOT)
+              ? `Held until the ${body.deferredUntil} is expected to act next.`
+              : `Held until ${agentLabel(selectedAgent)} is working again and the ${target} acts.`,
+          );
         }
         document.getElementById("human-text").value = "";
       }
@@ -1361,11 +1628,13 @@
           window.addEventListener("pointerup", up);
         });
       }
+      makeResizer("resize-agents", "agents-pane", 160, 1);
       makeResizer("resize-goals", "goals-pane", 240, 1);
       makeResizer("resize-overview", "overview-wrap", 180, -1);
 
       // --- collapsible side panes (state + widths remembered per browser) ---
       const PANES = {
+        "agents-pane": { divider: "resize-agents", collapse: "«", expand: "»" },
         "goals-pane": { divider: "resize-goals", collapse: "«", expand: "»" },
         "overview-wrap": { divider: "resize-overview", collapse: "»", expand: "«" },
       };

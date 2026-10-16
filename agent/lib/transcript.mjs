@@ -77,8 +77,10 @@ export function summarizeResult(result) {
  *
  * @param {string} filePath
  * @param {string} agent role label ("researcher" | "advisor")
+ * @param {{ agentId?: string }} [tags] extra reserved fields stamped on every
+ *   entry (the (sub)agent session the entry belongs to)
  */
-export function createTranscriptWriter(filePath, agent) {
+export function createTranscriptWriter(filePath, agent, tags = {}) {
   let fd = null;
   let broken = false;
 
@@ -104,7 +106,7 @@ export function createTranscriptWriter(filePath, agent) {
     write(kind, payload = {}) {
       // Reserved keys always win over payload fields so callers cannot
       // accidentally clobber the entry type (e.g. a handoff's kind).
-      const entry = { ...payload, ts: nowMs(), agent, kind };
+      const entry = { ...payload, ...tags, ts: nowMs(), agent, kind };
       const handle = ensure();
       if (handle === null) return entry;
       try {

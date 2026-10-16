@@ -13,6 +13,13 @@
  *   INIT -> RESEARCHER_DECOMPOSE -> ADVISOR_REVIEW_PLAN -> RESEARCHER_EXECUTE
  *        -> ADVISOR_REVIEW_RESULT -> RESEARCHER_DECOMPOSE (loop)
  *        -> ADVISOR_REVIEW_TASK -> AWAITING_HUMAN -> DONE | RESEARCHER_DECOMPOSE
+ *
+ * Subagents: from RESEARCHER_DECOMPOSE/EXECUTE the researcher may propose a
+ * subagent (-> ADVISOR_REVIEW_SUBAGENT). On approval this session pauses in
+ * SUBAGENT_RUNNING until the child finishes (applySubagentDone), then returns
+ * to the state the proposal was made from. A subagent's own session state has
+ * `subagent: true`: it skips skills and human sign-off, so an accepted task
+ * completion ends it directly in DONE (terminal "subagent_done").
  */
 
 export const STATES = {
@@ -25,14 +32,23 @@ export const STATES = {
   RESEARCHER_EXECUTE: "RESEARCHER_EXECUTE",
   ADVISOR_REVIEW_RESULT: "ADVISOR_REVIEW_RESULT",
   ADVISOR_REVIEW_TASK: "ADVISOR_REVIEW_TASK",
+  ADVISOR_REVIEW_SUBAGENT: "ADVISOR_REVIEW_SUBAGENT",
+  SUBAGENT_RUNNING: "SUBAGENT_RUNNING",
   AWAITING_HUMAN: "AWAITING_HUMAN",
   DONE: "DONE",
   ABORTED: "ABORTED",
 };
 
-export function createSessionState() {
+/**
+ * @param {{ subagent?: boolean }} [opts] `subagent` marks a child session
+ *   (no skills phase, no human sign-off).
+ */
+export function createSessionState({ subagent = false } = {}) {
   return {
     state: STATES.INIT,
+    subagent,
+    // State to return to once a proposed subagent is rejected or finishes.
+    subagentReturnState: null,
     currentGoalId: null,
     handoffs: 0,
     humanDecisions: [],
@@ -56,7 +72,7 @@ export function applyStart(state, { skipSkills = false } = {}) {
   return {
     state: {
       ...state,
-      state: skipSkills ? STATES.RESEARCHER_DECOMPOSE : STATES.RESEARCHER_SKILLS,
+      state: skipSkills || state.subagent ? STATES.RESEARCHER_DECOMPOSE : STATES.RESEARCHER_SKILLS,
     },
     deliveries: [],
   };
@@ -76,6 +92,33 @@ export function applyEnvelope(state, envelope) {
     s.state = newState;
     s.handoffs += 1;
     return { state: s, deliveries: [], ...extra };
+  };
+
+  // The researcher hands a self-contained subtask to a subagent; the advisor
+  // must approve it first. Allowed from the planning and execution phases.
+  const proposeSubagent = () => {
+    s.subagentReturnState = state.state;
+    return next(STATES.ADVISOR_REVIEW_SUBAGENT, {
+      deliveries: [delivery("advisor", envelope)],
+    });
+  };
+
+  // Accepted task completion: the human signs off a top-level session; a
+  // subagent session simply ends (its report goes back to the parent). A
+  // subagent may only finish through request_task_completion, which is where
+  // the harness checks its report and protected files.
+  const acceptTask = () => {
+    if (!state.subagent) {
+      return next(STATES.AWAITING_HUMAN, { notice: "advisor accepted task; awaiting human" });
+    }
+    if (state.state !== STATES.ADVISOR_REVIEW_TASK) {
+      return fail(
+        "a subagent can only be completed after the researcher calls request_task_completion",
+      );
+    }
+    s.finishedAt = Date.now();
+    s.terminalReason = "subagent completed";
+    return next(STATES.DONE, { terminal: "subagent_done", notice: "subagent completed" });
   };
 
   switch (state.state) {
@@ -151,6 +194,7 @@ export function applyEnvelope(state, envelope) {
           deliveries: [delivery("advisor", envelope)],
         });
       }
+      if (kind === "subagent_proposal") return proposeSubagent();
       return fail(`researcher cannot send '${kind}' while decomposing; expected proposal`);
     }
 
@@ -166,9 +210,7 @@ export function applyEnvelope(state, envelope) {
           deliveries: [delivery("researcher", envelope)],
         });
       }
-      if (kind === "task_accepted") {
-        return next(STATES.AWAITING_HUMAN, { notice: "advisor accepted task; awaiting human" });
-      }
+      if (kind === "task_accepted") return acceptTask();
       return fail(`advisor cannot send '${kind}' while reviewing a plan`);
     }
 
@@ -191,6 +233,7 @@ export function applyEnvelope(state, envelope) {
           deliveries: [delivery("advisor", envelope)],
         });
       }
+      if (kind === "subagent_proposal") return proposeSubagent();
       return fail(`researcher cannot send '${kind}' while executing`);
     }
 
@@ -207,17 +250,13 @@ export function applyEnvelope(state, envelope) {
           deliveries: [delivery("researcher", envelope)],
         });
       }
-      if (kind === "task_accepted") {
-        return next(STATES.AWAITING_HUMAN, { notice: "advisor accepted task; awaiting human" });
-      }
+      if (kind === "task_accepted") return acceptTask();
       return fail(`advisor cannot send '${kind}' while reviewing a result`);
     }
 
     case STATES.ADVISOR_REVIEW_TASK: {
       if (envelope.role !== "advisor") return fail(`expected advisor, got ${envelope.role}`);
-      if (kind === "task_accepted") {
-        return next(STATES.AWAITING_HUMAN, { notice: "advisor accepted task; awaiting human" });
-      }
+      if (kind === "task_accepted") return acceptTask();
       if (kind === "task_changes") {
         return next(STATES.RESEARCHER_DECOMPOSE, {
           deliveries: [delivery("researcher", envelope)],
@@ -225,6 +264,24 @@ export function applyEnvelope(state, envelope) {
       }
       return fail(`advisor cannot send '${kind}' while reviewing task completion`);
     }
+
+    case STATES.ADVISOR_REVIEW_SUBAGENT: {
+      if (envelope.role !== "advisor") return fail(`expected advisor, got ${envelope.role}`);
+      if (kind === "subagent_approved") {
+        // No delivery: the control plane starts the child session and this
+        // one stays paused until applySubagentDone.
+        return next(STATES.SUBAGENT_RUNNING, { spawn: true, notice: "subagent approved" });
+      }
+      if (kind === "subagent_changes") {
+        const back = state.subagentReturnState || STATES.RESEARCHER_DECOMPOSE;
+        s.subagentReturnState = null;
+        return next(back, { deliveries: [delivery("researcher", envelope)] });
+      }
+      return fail(`advisor cannot send '${kind}' while reviewing a subagent proposal; expected approve_subagent or reject_subagent`);
+    }
+
+    case STATES.SUBAGENT_RUNNING:
+      return fail("a subagent is running; this session is paused until it reports back");
 
     case STATES.AWAITING_HUMAN:
       return fail("session is awaiting a human decision; agent messages are not accepted here");
@@ -276,6 +333,24 @@ export function applyHumanDecision(state, decision) {
     return { state: s, deliveries: [delivery("researcher", envelope)] };
   }
   return { state, deliveries: [], error: `unknown human action: ${decision.action}` };
+}
+
+/**
+ * A child subagent finished: resume this (parent) session in the state the
+ * proposal was made from and hand the report to its researcher.
+ * @param {object} state parent session state (SUBAGENT_RUNNING)
+ * @param {object} envelope the report envelope delivered to the researcher
+ */
+export function applySubagentDone(state, envelope) {
+  if (state.state !== STATES.SUBAGENT_RUNNING) {
+    return { state, deliveries: [], error: `no subagent is running in ${state.state}` };
+  }
+  const s = {
+    ...state,
+    state: state.subagentReturnState || STATES.RESEARCHER_EXECUTE,
+    subagentReturnState: null,
+  };
+  return { state: s, deliveries: [delivery("researcher", envelope)] };
 }
 
 export function markAborted(state, reason) {

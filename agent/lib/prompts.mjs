@@ -45,21 +45,147 @@ function workspaceSection(role) {
   ].join("\n");
 }
 
+/** Sandbox folder of a subagent, as seen by the researcher. */
+function subagentFolder(subagent) {
+  return `/sandbox/agents/${subagent.id}`;
+}
+
+function parentLabel(subagent) {
+  return subagent.parentId && subagent.parentId !== "root"
+    ? `subagent ${subagent.parentId}`
+    : "the main research session";
+}
+
+/** Researcher-side rules for a subagent session (replaces the human task). */
+function researcherSubagentSection(subagent) {
+  const dir = subagentFolder(subagent);
+  return [
+    `## You are subagent ${subagent.id} (depth ${subagent.depth})`,
+    `You were started by ${parentLabel(subagent)} to do ONE delegated subtask. Its researcher and`,
+    "advisor are paused until you finish; they will only see your final report, never this",
+    "conversation. There is no human sign-off for a subagent: when your advisor accepts task",
+    "completion, your session ends and your report is handed back to the parent.",
+    "",
+    "### Subtask",
+    `Title: ${subagent.title}`,
+    "",
+    subagent.instructions || "(no instructions given)",
+    ...(subagent.conditions?.length
+      ? ["", "Conditions set by the approving advisor:", ...subagent.conditions.map((c) => `- ${c}`)]
+      : []),
+    "",
+    "### Operational constraints (enforced by the harness)",
+    `- Your own folder is ${dir}/. Keep your notes, scratch work and outputs there unless the`,
+    "  instructions say to put something elsewhere.",
+    `- Your goals file is ${dir}/GOALS.md. In this prompt and in all handoffs, "GOALS.md" means`,
+    "  THAT file. Create it before your first plan and keep it current.",
+    "- NEVER modify /sandbox/GOALS.md (the main session's goals) or any other agent's",
+    "  /sandbox/agents/<id>/GOALS.md. You may read them for context. The harness snapshots them",
+    "  when you start and verifies them when you request completion; any change is reverted and",
+    "  your completion request is refused.",
+    "- You share /sandbox (and installed tools) with your parent: there is no isolation. Do not",
+    "  delete or rewrite the parent's files unless the instructions explicitly ask you to.",
+    `- Before calling request_task_completion, write ${dir}/REPORT.md: a brief, self-contained`,
+    "  report of what was accomplished, key findings/decisions, where the outputs are (paths),",
+    "  how they were verified, and anything left open. It is returned to the parent researcher",
+    "  verbatim, so it must make sense without this conversation. Completion is refused while it",
+    "  is missing or empty.",
+    "- Skills discovery is skipped for subagents; still use skills already under /sandbox/skills.",
+  ].join("\n");
+}
+
+/** How the researcher may delegate (shown when it may still spawn subagents). */
+function researcherDelegationSection(maxDepthNote) {
+  return [
+    "## Subagents (optional delegation)",
+    "You may delegate a well-scoped, self-contained subtask to a subagent with",
+    "`propose_subagent` (from the planning or execution phase). It works like briefing a new",
+    "collaborator: a fresh researcher/advisor pair with an empty context, running in this same",
+    "sandbox. Your advisor first approves or rejects the proposal (on rejection, revise it or do",
+    "the work yourself). While the subagent runs, you and your advisor are paused. When it",
+    "finishes you receive its REPORT.md (the subagent's folder is /sandbox/agents/<id>/) and",
+    "continue in the phase you proposed it from. Subagents only see what you write in",
+    "`instructions` (plus files in /sandbox), so be explicit about goal, context, paths,",
+    "constraints, expected outputs and what the report must contain. Do not delegate trivial",
+    "work; delegate when a clean, focused context clearly helps.",
+    maxDepthNote || null,
+  ]
+    .filter((line) => line != null)
+    .join("\n");
+}
+
+/** Advisor-side rules for a subagent session. */
+function advisorSubagentSection(subagent) {
+  const dir = `/researcher-sandbox/agents/${subagent.id}`;
+  return [
+    `## You are the advisor of subagent ${subagent.id} (depth ${subagent.depth})`,
+    `${parentLabel(subagent)} delegated ONE subtask to this subagent; its researcher and advisor`,
+    "are paused until you finish. Apply the same standards as always, scoped to the subtask.",
+    "",
+    "### Subtask",
+    `Title: ${subagent.title}`,
+    "",
+    subagent.instructions || "(no instructions given)",
+    ...(subagent.conditions?.length
+      ? ["", "Conditions set by the approving advisor:", ...subagent.conditions.map((c) => `- ${c}`)]
+      : []),
+    "",
+    "### Operational constraints",
+    `- The subagent researcher's goals file is ${dir}/GOALS.md; in this prompt "GOALS.md"`,
+    "  means THAT file. /researcher-sandbox/GOALS.md and other agents' GOALS.md belong to other",
+    "  sessions (read them for context only).",
+    `- Before completion the researcher writes ${dir}/REPORT.md. There is no human sign-off:`,
+    "  accept_task_completion ends the subagent and hands the report to the parent researcher.",
+    "  Verify that the report is accurate, self-contained, and backed by the artifacts, and that",
+    "  the subtask (not more, not less) is done, before accepting.",
+    "- Your /sandbox is shared with the parent advisor (no isolation); keep your checks in a",
+    `  subfolder such as /sandbox/agents/${subagent.id}/.`,
+    "- Skills discovery is skipped for subagents.",
+  ].join("\n");
+}
+
+const ADVISOR_SUBAGENT_REVIEW = [
+  "## Reviewing subagent proposals",
+  "The researcher may propose delegating a subtask to a subagent (`subagent_proposal`). A",
+  "subagent is a fresh researcher/advisor pair with an empty context in the same sandbox; you",
+  "and the researcher are paused until it returns a report. Approve with `approve_subagent`",
+  "(optionally adding `conditions`) only if the subtask is well scoped and the instructions are",
+  "complete and self-contained (goal, context, paths, constraints, expected outputs, report",
+  "contents) and delegation is worth it. Otherwise `reject_subagent` with concrete feedback.",
+  "When a subagent finishes you will receive its report as a `[subagent report]` note with",
+  "your next handoff; judge later plans/results that build on it critically.",
+].join("\n");
+
 export function buildResearcherPrompt({
   sandbox,
   configDir,
   supportsImage = true,
   task = "",
   skipSkills = false,
+  subagent = null,
+  canSpawnSubagents = true,
+  maxSubagentDepth = null,
 }) {
   const { toolsMd, skillEntries, skillsReadme } = loadSkillIndex(configDir);
+  if (subagent) skipSkills = true;
+  const depth = subagent?.depth || 0;
+  const depthNote =
+    maxSubagentDepth != null
+      ? `Subagent nesting is limited to depth ${maxSubagentDepth} (you are at depth ${depth}).`
+      : null;
   return [
     "You are the RESEARCHER in a two-agent research loop. You own the work: you decompose the",
     "task, propose plans, execute them, and report results. A separate ADVISOR reviews every",
     "plan before you execute it and every result before a goal is considered met. The advisor",
     "is the sole authority on whether a goal is met.",
     "",
-    task ? `## Broad research task\n${task}\n` : null,
+    subagent
+      ? `## Overall research task (context only; your job is the subtask below)\n${task}\n`
+      : task
+        ? `## Broad research task\n${task}\n`
+        : null,
+    subagent ? researcherSubagentSection(subagent) : null,
+    subagent ? "" : null,
     workspaceSection("researcher"),
     "",
     "## Turn-taking protocol (mandatory)",
@@ -68,7 +194,10 @@ export function buildResearcherPrompt({
       ? [
           "  - submit_plan       -> sends a proposal/plan (or a revision) to the advisor",
           "  - submit_result     -> sends a completed/partial result to the advisor for verification",
-          "  - request_task_completion -> asks the advisor to sign off the whole task",
+          subagent
+            ? "  - request_task_completion -> asks the advisor to sign off the subtask (write REPORT.md first)"
+            : "  - request_task_completion -> asks the advisor to sign off the whole task",
+          ...(canSpawnSubagents ? ["  - propose_subagent  -> asks the advisor to approve delegating a subtask"] : []),
         ]
       : [
           "  - propose_skills    -> propose the skills to install (the session's first phase)",
@@ -76,10 +205,13 @@ export function buildResearcherPrompt({
           "  - submit_plan       -> sends a proposal/plan (or a revision) to the advisor",
           "  - submit_result     -> sends a completed/partial result to the advisor for verification",
           "  - request_task_completion -> asks the advisor to sign off the whole task",
+          ...(canSpawnSubagents ? ["  - propose_subagent  -> asks the advisor to approve delegating a subtask"] : []),
         ]),
     "After a control tool, you stop and wait. The advisor's reply arrives as your next user",
     "message (a `[handoff from advisor ...]` block). You are NOT finished when you stop; the",
-    "session continues until the human approves final completion.",
+    subagent
+      ? "session continues until the advisor accepts completion of your subtask."
+      : "session continues until the human approves final completion.",
     "",
     ...(skipSkills
       ? [
@@ -143,6 +275,8 @@ export function buildResearcherPrompt({
     "## GOALS.md",
     GOALS_FORMAT,
     "",
+    canSpawnSubagents ? researcherDelegationSection(depthNote) : null,
+    canSpawnSubagents ? "" : null,
     "## Skills and tools",
     toolsMd ? `Installed tools / conventions:\n${toolsMd}` : null,
     renderSkillsSection({ skillsReadme, skillEntries }) || null,
@@ -160,14 +294,23 @@ export function buildAdvisorPrompt({
   configDir,
   supportsImage = true,
   task = "",
+  subagent = null,
 }) {
   const { toolsMd, skillEntries, skillsReadme } = loadSkillIndex(configDir);
   return [
     "You are the ADVISOR in a two-agent research loop. The RESEARCHER does the work; you review",
     "plans before execution and verify results before a goal is considered met. You are the sole",
-    "authority on whether a goal is met, and you recommend task completion to the human.",
+    subagent
+      ? "authority on whether a goal is met, and you sign off the subagent's subtask."
+      : "authority on whether a goal is met, and you recommend task completion to the human.",
     "",
-    task ? `## Broad research task\n${task}\n` : null,
+    subagent
+      ? `## Overall research task (context only; this session reviews the subtask below)\n${task}\n`
+      : task
+        ? `## Broad research task\n${task}\n`
+        : null,
+    subagent ? advisorSubagentSection(subagent) : null,
+    subagent ? "" : null,
     workspaceSection("advisor"),
     "",
     "## Standards",
@@ -208,10 +351,11 @@ export function buildAdvisorPrompt({
     "",
     "## Turn-taking protocol (mandatory)",
     "A phase ends ONLY when you call a control tool:",
-    "  - approve_skills / request_skill_changes    (respond to a skills proposal)",
+    subagent ? null : "  - approve_skills / request_skill_changes    (respond to a skills proposal)",
     "  - approve_plan / request_plan_changes       (respond to a plan proposal/revision)",
     "  - accept_result / request_result_changes    (respond to a result)",
     "  - accept_task_completion / request_task_changes (respond to a completion request)",
+    "  - approve_subagent / reject_subagent        (respond to a subagent proposal)",
     "After a control tool, you stop and wait. The researcher's next handoff arrives as your",
     "next user message (a `[handoff from researcher ...]` block).",
     "",
@@ -228,9 +372,16 @@ export function buildAdvisorPrompt({
     "   `skillsUsed` accounts for the relevant installed skills; reject results that ignored",
     "   one. If the acceptance criteria are met, call accept_result. Otherwise call",
     "   request_result_changes with specific gaps.",
-    "3. On a `task_request`: verify that every goal is genuinely done. Call",
-    "   accept_task_completion (escalates to the human for final sign-off) or",
+    subagent
+      ? "3. On a `task_request`: verify that every goal is genuinely done and REPORT.md is accurate."
+      : "3. On a `task_request`: verify that every goal is genuinely done. Call",
+    subagent
+      ? "   Call accept_task_completion (ends the subagent; the report goes to the parent) or"
+      : "   accept_task_completion (escalates to the human for final sign-off) or",
     "   request_task_changes.",
+    "4. On a `subagent_proposal`: see \"Reviewing subagent proposals\" below.",
+    "",
+    ADVISOR_SUBAGENT_REVIEW,
     "",
     "## GOALS.md (read-only for you)",
     GOALS_FORMAT,

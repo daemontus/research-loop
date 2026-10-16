@@ -184,6 +184,35 @@ export function researcherControlToolDefs() {
         unfinished: strArray("Any goals intentionally left unfinished, with reasons."),
       }),
     },
+    {
+      name: "propose_subagent",
+      label: "Propose Subagent",
+      kind: "subagent_proposal",
+      description:
+        "Propose delegating a self-contained subtask to a SUBAGENT: a fresh researcher/advisor " +
+        "pair with its own context that works in your sandbox while you wait, and returns a " +
+        "written report. The advisor must approve the proposal first (it may reject it with " +
+        "feedback; then revise and propose again, or continue yourself). The subagent sees " +
+        "nothing of your conversation: `instructions` must be complete and self-contained " +
+        "(goal, context, relevant /sandbox paths, constraints, where to put outputs, what the " +
+        "report must contain). Use it for well-scoped work that benefits from a clean context " +
+        "(e.g. a focused investigation, an implementation, an experiment batch).",
+      parameters: Type.Object({
+        title: Type.String({ description: "Short name of the subtask." }),
+        instructions: Type.String({
+          description:
+            "Complete, self-contained instructions for the subagent, written as a human would " +
+            "brief a new collaborator.",
+        }),
+        goalId: Type.Optional(
+          Type.String({ description: "Your goal id (from your GOALS.md) this subtask serves, if any." }),
+        ),
+        rationale: Type.String({
+          description: "Why delegating this to a subagent is better than doing it yourself.",
+        }),
+        expectedOutputs: strArray("What the subagent must produce (files, findings, report content)."),
+      }),
+    },
   ];
 }
 
@@ -299,8 +328,45 @@ export function advisorControlToolDefs() {
         advisory: ADVISORY,
       }),
     },
+    {
+      name: "approve_subagent",
+      label: "Approve Subagent",
+      kind: "subagent_approved",
+      description:
+        "Approve the researcher's subagent proposal. The subagent starts immediately with the " +
+        "proposed instructions (plus your `conditions`, which are appended to them); the " +
+        "researcher and you wait until it reports back. Only approve a well-scoped, " +
+        "self-contained subtask whose instructions a fresh agent could follow without the " +
+        "conversation so far.",
+      parameters: Type.Object({
+        feedback: FEEDBACK,
+        conditions: strArray("Optional constraints added to the subagent's instructions."),
+        advisory: ADVISORY,
+      }),
+    },
+    {
+      name: "reject_subagent",
+      label: "Reject Subagent",
+      kind: "subagent_changes",
+      description:
+        "Reject the subagent proposal with feedback (unclear or incomplete instructions, poor " +
+        "scope, better done directly, ...). The researcher may revise and propose again or " +
+        "continue the work itself.",
+      parameters: Type.Object({
+        requiredChanges: CHANGES,
+        feedback: FEEDBACK,
+      }),
+    },
   ];
 }
+
+/** Skills-phase control tools (not offered to subagents, which skip that phase). */
+export const SKILLS_CONTROL_TOOLS = new Set([
+  "propose_skills",
+  "confirm_skills_installed",
+  "approve_skills",
+  "request_skill_changes",
+]);
 
 /**
  * Bind a set of control-tool definitions to a controller.
@@ -315,6 +381,8 @@ const GOALLESS_TOOLS = new Set([
   "confirm_skills_installed",
   "approve_skills",
   "request_skill_changes",
+  "approve_subagent",
+  "reject_subagent",
 ]);
 
 export function bindControlTools(defs, controller) {

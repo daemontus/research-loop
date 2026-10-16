@@ -42,6 +42,7 @@ envelope to the broker, which validates the transition and routes it to the peer
 | `submit_plan` | `approve_plan` / `request_plan_changes` | plan review |
 | `submit_result` | `accept_result` / `request_result_changes` | result review |
 | `request_task_completion` | `accept_task_completion` / `request_task_changes` | task sign-off |
+| `propose_subagent` | `approve_subagent` / `reject_subagent` | delegate a subtask (see [Subagents](#subagents)) |
 
 ```
 RESEARCHER_DECOMPOSE → ADVISOR_REVIEW_PLAN → RESEARCHER_EXECUTE
@@ -83,6 +84,64 @@ Goals have stable ids and statuses:
 
 The WebUI shows the live `GOALS.md`.
 
+## Subagents
+
+The researcher can delegate a self-contained subtask with `propose_subagent`
+(from the planning or execution phase), briefing it like a human would brief a
+new collaborator (`title`, `instructions`, `rationale`, optional `goalId` and
+`expectedOutputs`). The advisor approves it (`approve_subagent`, optionally
+adding `conditions` that are appended to the instructions) or rejects it with
+feedback (`reject_subagent`), after which the researcher revises or carries on.
+
+An approved subagent is a fresh researcher/advisor pair that follows the same
+plan/result review loop as the main session, with its own context and its own
+provider session id. It skips the skills phase and human sign-off: when its
+advisor accepts task completion, the subagent ends and its report goes back to
+the parent researcher, which continues in the phase it proposed from. The
+parent's advisor receives the report as a note with its next handoff. Advisors
+cannot start subagents.
+
+- **Sequential**: while a subagent runs, its parent (both roles) is paused;
+  exactly one agent session is active at a time.
+- **Recursive**: subagents can propose their own subagents. Nesting is
+  unlimited by default; `--max-subagent-depth N` caps it (`0` disables
+  subagents, and the tool is not offered beyond the limit).
+- **Same containers, same model**: a subagent's researcher runs in the
+  researcher container and its advisor in the advisor container, as a separate
+  conversation in the same agent process. There is no isolation between a
+  subagent and its parent's environment (same `/sandbox`, installed tools,
+  model), but researcher/advisor isolation is unchanged.
+- **Own folder, protected goals**: subagent `S<n>` works in
+  `/sandbox/agents/S<n>/` and keeps its own `GOALS.md` there. When it starts, the
+  harness snapshots every other existing `GOALS.md` (main and other agents');
+  when it calls `request_task_completion`, changed files are restored from the
+  snapshot and the request is refused with an explanation.
+- **Report**: before completion the subagent must write
+  `/sandbox/agents/S<n>/REPORT.md` (completion is refused while it is missing or
+  empty). The report is inlined into the parent's next prompt.
+
+Subagents learn all of this from their system prompt. On disk:
+
+```
+runs/<id>/
+  agents/S<n>/                 # harness records (outside the sandbox)
+    agent.json                 # id, parent, depth, title, instructions, status
+    instructions.md            # the approved brief (+ conditions)
+    goals-snapshot.json        # protected GOALS.md contents at start
+    REPORT.md                  # copy of the final report
+  transcripts/agents/S<n>/{researcher,advisor}.jsonl
+  researcher-sandbox/agents/S<n>/{GOALS.md,REPORT.md,...}
+```
+
+`session.jsonl` records `subagent_start`/`subagent_done`, and every transcript
+entry carries the `agentId` it belongs to. `--resume` rebuilds the agent tree
+from the log: if a subagent was active, it continues (with a fresh context);
+other agents get a note that their context was reset the next time they are
+prompted. `stats.json` includes subagent tokens/turns (per role and per agent).
+
+This is deliberately simple: goal and report files are plain Markdown in the
+shared sandbox, guarded only by the snapshot check.
+
 ## Human-in-the-loop
 
 The advisor cannot end the session. When the advisor accepts task completion the
@@ -99,7 +158,15 @@ A human can also inject a steering message to either agent at any time.
 Both agents append JSONL transcripts to a host directory mounted outside the
 sandbox (`runs/<id>/transcripts/{researcher,advisor}.jsonl`), and the control
 plane records `session.jsonl`. The WebUI (`http://127.0.0.1:<port>/?token=...`)
-has three panes:
+has four panes:
+
+- **Agents** (far left) — a tree of the main session and its subagents (who
+  started whom), with each one's status (working role, waiting on a child,
+  done). Click an agent to switch the other panes to its transcript, overview,
+  goals and subtask/report; finished agents keep their full history. With
+  **follow** checked, the view switches to whichever agent is working. Human
+  messages go to the selected agent (held until it is working again if it is
+  paused).
 
 - **Task / Goals** (left) — the task text plus the researcher's `GOALS.md`,
   rendered from Markdown to HTML with a standard CommonMark parser (vendored
@@ -239,6 +306,7 @@ per task (and can even update the bundled Rust/uv at runtime).
 | `--faux` | off | offline scripted demo (implies `--local` unless `--docker`) |
 | `--auto-approve` | off | auto-approve final completion (for testing) |
 | `--skip-skills` | off | skip the skills-discovery phase and start planning immediately |
+| `--max-subagent-depth` | unlimited | maximum subagent nesting depth (`0` disables subagents) |
 | `--no-open` | off | do not open the WebUI in a browser (URL is still printed) |
 | `--no-model-discovery` | off | skip querying the provider's `/models` for context/output limits |
 | `--researcher-context-window` / `--advisor-context-window` | discovered/config | override a model's context window |

@@ -26,11 +26,16 @@ import { AgentSession } from "./lib/agent-runner.mjs";
 import { clientSessionId } from "./lib/client-identity.mjs";
 import { createBrokerClient } from "./lib/broker-client.mjs";
 import { createPartialStreamer } from "./lib/partial-stream.mjs";
-import { bindControlTools, advisorControlToolDefs, researcherControlToolDefs } from "./lib/control-tools.mjs";
+import {
+  bindControlTools,
+  advisorControlToolDefs,
+  researcherControlToolDefs,
+  SKILLS_CONTROL_TOOLS,
+} from "./lib/control-tools.mjs";
 import { modelSupportsImages } from "./lib/model-capabilities.mjs";
 import { buildModels, parseModelSpec, resolveModel, assertProviderConfigured } from "./lib/model-providers.mjs";
 import { buildAdvisorPrompt, buildResearcherPrompt } from "./lib/prompts.mjs";
-import { renderInbound } from "./lib/protocol.mjs";
+import { renderInbound, ROOT_AGENT_ID } from "./lib/protocol.mjs";
 import { scanSkills, renderInstalledSkills } from "./lib/skills.mjs";
 import { makeInstallSkillTool } from "./lib/skill-tools.mjs";
 import { makeTools } from "./lib/tools.mjs";
@@ -59,12 +64,14 @@ async function loadJob() {
   return JSON.parse(raw);
 }
 
-function researcherGoalsPath(role, sandbox, extraRoots) {
+/** The researcher's GOALS.md for an agent (a subagent keeps its own). */
+function researcherGoalsPath(role, sandbox, extraRoots, subagentId = null) {
+  const rel = subagentId ? path.join("agents", subagentId, "GOALS.md") : "GOALS.md";
   if (role === "advisor") {
     const root = (extraRoots || []).find((r) => r.prefix === "/researcher-sandbox");
-    if (root && root.dir) return path.join(root.dir, "GOALS.md");
+    if (root && root.dir) return path.join(root.dir, rel);
   }
-  return path.join(sandbox, "GOALS.md");
+  return path.join(sandbox, rel);
 }
 
 function readGoalsSnapshot(goalsPath) {
@@ -124,96 +131,151 @@ async function main() {
   const model = job.modelLimits ? { ...resolved.model, ...job.modelLimits } : resolved.model;
   await assertProviderConfigured(models, model);
 
-  const transcriptPath =
-    job.transcriptPath || `/transcripts/${role}.jsonl`;
-  const transcript = createTranscriptWriter(transcriptPath, role);
+  const rootTranscriptPath = job.transcriptPath || `/transcripts/${role}.jsonl`;
+  // Process-level log (lifecycle, broker trouble); per-agent conversations get
+  // their own writers below.
+  const transcript = createTranscriptWriter(rootTranscriptPath, role, { agentId: ROOT_AGENT_ID });
 
   const supportsImage = modelSupportsImages(model);
   const skipSkills = Boolean(job.skipSkills);
-  const systemPrompt =
-    role === "researcher"
-      ? buildResearcherPrompt({
-          sandbox,
-          configDir,
-          supportsImage,
-          task: job.task || "",
-          skipSkills,
-        })
-      : buildAdvisorPrompt({ sandbox, configDir, supportsImage, task: job.task || "" });
-
-  const controlState = { pendingHandoff: null };
-  const controller = {
-    setHandoff: (h) => {
-      if (controlState.pendingHandoff) return false;
-      controlState.pendingHandoff = h;
-      return true;
-    },
-  };
-  const goalsPath = researcherGoalsPath(role, sandbox, extraRoots);
-  const skillRoots = skillRootsFor(role, sandbox, extraRoots);
-
+  const maxSubagentDepth =
+    job.maxSubagentDepth === null || job.maxSubagentDepth === undefined
+      ? null
+      : Number(job.maxSubagentDepth);
   const genericTools = makeTools(sandbox, {
     configDir,
     prefetchPath,
     extraRoots,
     supportsImage,
   });
-  const skillTools = role === "researcher" ? [makeInstallSkillTool(sandbox)] : [];
-  const controlDefs =
-    role === "researcher" ? researcherControlToolDefs() : advisorControlToolDefs();
-  const tools = [...genericTools, ...skillTools, ...bindControlTools(controlDefs, controller)];
-
-  const session = new AgentSession({
-    role,
-    model,
-    models,
-    systemPrompt,
-    tools,
-    sandbox,
-    goalsPath,
-    transcript,
-    controlState,
-    thinkingLevel: job.thinkingLevel || resolved.effort || "off",
-    maxTurnsPerPhase: job.maxTurnsPerPhase ?? 1000,
-    abortTimeoutMs: job.abortTimeoutMs ?? 0,
-    phaseTimeoutMs: job.phaseTimeoutMs ?? 0,
-    clientSessionId: clientSessionId(job.sessionId || "", role),
-  });
-  await session.start();
-
-  transcript.write("system", {
-    content: `agent started (role=${role}, model=${job.model})`,
-  });
-  log(`started role=${role} model=${job.model} sandbox=${sandbox} transcript=${transcriptPath}`);
 
   const broker = createBrokerClient({
     brokerUrl: job.brokerUrl,
     role,
     token: job.token,
   });
+
+  /**
+   * One conversation (AgentSession) per agent: the root session plus any
+   * subagent the control plane routes to this process. Created lazily on the
+   * first envelope for that agent; subagent metadata rides on its envelopes.
+   * @type {Map<string, { session: AgentSession, controlDefs: object[], transcript: object, goalsPath: string, skillRoots: object[] }>}
+   */
+  const contexts = new Map();
+
+  function createContext(agentId, meta) {
+    const subagent = agentId === ROOT_AGENT_ID ? null : { ...(meta || {}), id: agentId };
+    const depth = subagent?.depth || 0;
+    const canSpawnSubagents =
+      role === "researcher" && (maxSubagentDepth == null || depth + 1 <= maxSubagentDepth);
+    const agentTranscriptPath = subagent
+      ? path.join(path.dirname(rootTranscriptPath), "agents", agentId, `${role}.jsonl`)
+      : rootTranscriptPath;
+    const agentTranscript = subagent
+      ? createTranscriptWriter(agentTranscriptPath, role, { agentId })
+      : transcript;
+    if (subagent && role === "researcher") {
+      fs.mkdirSync(path.join(sandbox, "agents", agentId), { recursive: true });
+    }
+    const systemPrompt =
+      role === "researcher"
+        ? buildResearcherPrompt({
+            sandbox,
+            configDir,
+            supportsImage,
+            task: job.task || "",
+            skipSkills,
+            subagent,
+            canSpawnSubagents,
+            maxSubagentDepth,
+          })
+        : buildAdvisorPrompt({ sandbox, configDir, supportsImage, task: job.task || "", subagent });
+
+    const controlState = { pendingHandoff: null };
+    const controller = {
+      setHandoff: (h) => {
+        if (controlState.pendingHandoff) return false;
+        controlState.pendingHandoff = h;
+        return true;
+      },
+    };
+    const goalsPath = researcherGoalsPath(role, sandbox, extraRoots, subagent ? agentId : null);
+    const skillRoots = skillRootsFor(role, sandbox, extraRoots);
+    const skillTools = role === "researcher" && !subagent ? [makeInstallSkillTool(sandbox)] : [];
+    let controlDefs =
+      role === "researcher" ? researcherControlToolDefs() : advisorControlToolDefs();
+    if (subagent) controlDefs = controlDefs.filter((d) => !SKILLS_CONTROL_TOOLS.has(d.name));
+    if (!canSpawnSubagents) controlDefs = controlDefs.filter((d) => d.name !== "propose_subagent");
+    const tools = [...genericTools, ...skillTools, ...bindControlTools(controlDefs, controller)];
+
+    const session = new AgentSession({
+      role,
+      model,
+      models,
+      systemPrompt,
+      tools,
+      sandbox,
+      goalsPath,
+      transcript: agentTranscript,
+      controlState,
+      thinkingLevel: job.thinkingLevel || resolved.effort || "off",
+      maxTurnsPerPhase: job.maxTurnsPerPhase ?? 1000,
+      abortTimeoutMs: job.abortTimeoutMs ?? 0,
+      phaseTimeoutMs: job.phaseTimeoutMs ?? 0,
+      // Each agent is its own provider-side session; the root keeps the
+      // historical id so resumed runs stay stable.
+      clientSessionId: clientSessionId(job.sessionId || "", subagent ? `${role}:${agentId}` : role),
+    });
+    session.start();
+    // Stream in-progress thinking/text to the WebUI as it arrives.
+    session.partialStreamer = createPartialStreamer((ops) => broker.partial(ops, agentId));
+    agentTranscript.write("system", {
+      content: subagent
+        ? `subagent ${agentId} session started (role=${role}, parent=${subagent.parentId}, depth=${depth})`
+        : `agent started (role=${role}, model=${job.model})`,
+    });
+    const ctx = { agentId, session, controlDefs, transcript: agentTranscript, goalsPath, skillRoots };
+    contexts.set(agentId, ctx);
+    return ctx;
+  }
+
+  function contextFor(envelope) {
+    const agentId = envelope.agentId || ROOT_AGENT_ID;
+    return contexts.get(agentId) || createContext(agentId, envelope.agent);
+  }
+
+  function closeContext(agentId) {
+    const ctx = contexts.get(agentId);
+    if (!ctx || agentId === ROOT_AGENT_ID) return;
+    ctx.transcript.write("system", { content: `subagent ${agentId} finished`, stats: ctx.session.stats() });
+    ctx.transcript.close();
+    contexts.delete(agentId);
+  }
+
+  const rootCtx = createContext(ROOT_AGENT_ID, null);
+  log(`started role=${role} model=${job.model} sandbox=${sandbox} transcript=${rootTranscriptPath}`);
+
   await broker.register();
   await broker.event("registered", { role, model: job.model });
-  // Stream in-progress thinking/text to the WebUI as it arrives.
-  session.partialStreamer = createPartialStreamer((ops) => broker.partial(ops));
   log(`registered with broker at ${job.brokerUrl}`);
 
   let cursor = 0;
   let done = false;
 
 
-  const sendHandoff = async (handoff) => {
-    transcript.write("handoff", {
+  const sendHandoff = async (ctx, handoff) => {
+    ctx.transcript.write("handoff", {
       direction: "out",
       handoffKind: handoff.kind,
       goalId: handoff.goalId,
       text: handoff.text,
       payload: handoff.payload,
     });
-    const res = await broker.send(handoff);
+    const res = await broker.send({ ...handoff, agentId: ctx.agentId });
     if (res && res.ok === false) {
       // The broker rejected the handoff and queued a correction prompt for us;
       // keep the session alive so the next loop iteration can act on it.
-      transcript.write("system", {
+      ctx.transcript.write("system", {
         content:
           `handoff rejected by broker: ${res.error || "invalid"} ` +
           `(state=${res.state || "?"}); awaiting correction prompt`,
@@ -223,18 +285,19 @@ async function main() {
     return res;
   };
 
-  const tryFinish = async (result) => {
-    const handoff = session.takeHandoff();
+  const tryFinish = async (ctx) => {
+    const handoff = ctx.session.takeHandoff();
     if (!handoff) return false;
-    await sendHandoff(handoff);
+    await sendHandoff(ctx, handoff);
     return true;
   };
 
   // Run one phase and guarantee we never silently stall: either a handoff is
   // produced, or a fatal error is thrown (which exits non-zero and aborts).
-  const runPhase = async (prompt) => {
+  const runPhase = async (ctx, prompt) => {
+    const { session, controlDefs, transcript: tx } = ctx;
     const first = await session.runPrompt(prompt);
-    if (await tryFinish(first)) return;
+    if (await tryFinish(ctx)) return;
     const reason = String(first.stopReason || "").toLowerCase();
     if (first.error || reason === "error" || reason === "aborted") {
       throw new Error(
@@ -243,7 +306,7 @@ async function main() {
     }
     // The model stopped without calling a control tool; nudge it, bounded.
     for (let attempt = 1; attempt <= 3; attempt += 1) {
-      transcript.write("system", {
+      tx.write("system", {
         content: `no control-tool handoff (stopReason=${first.stopReason}); correction ${attempt}/3`,
       });
       const correction = [
@@ -253,7 +316,7 @@ async function main() {
         "Continue from where you are and call the appropriate control tool now.",
       ].join("\n");
       const next = await session.runPrompt(correction);
-      if (await tryFinish(next)) return;
+      if (await tryFinish(ctx)) return;
       const r = String(next.stopReason || "").toLowerCase();
       if (next.error || r === "error" || r === "aborted") {
         throw new Error(
@@ -267,12 +330,15 @@ async function main() {
   const onSignal = (signal) => {
     if (done) return;
     done = true;
-    try {
-      session.abort();
-    } catch {
-      // ignore
+    for (const ctx of contexts.values()) {
+      try {
+        ctx.session.abort();
+      } catch {
+        // ignore
+      }
     }
     transcript.write("system", { content: `termination signal (${signal}) received; exiting` });
+    for (const ctx of contexts.values()) ctx.transcript.close();
     transcript.close();
     process.exit(0);
   };
@@ -311,22 +377,28 @@ async function main() {
           }
           if (envelope.kind === "abort") {
             transcript.write("system", { content: `abort received: ${envelope.text || ""}` });
-            session.abort();
+            for (const ctx of contexts.values()) ctx.session.abort();
             done = true;
             break;
           }
+          if (envelope.kind === "agent_done") {
+            closeContext(envelope.agentId);
+            continue;
+          }
           if (envelope.kind === "start" || envelope.kind === "prompt") {
-            transcript.write("system", { content: `${envelope.kind} received` });
-            await runPhase(envelope.text || "");
+            const ctx = contextFor(envelope);
+            ctx.transcript.write("system", { content: `${envelope.kind} received` });
+            await runPhase(ctx, envelope.text || "");
             continue;
           }
         }
 
+        const ctx = contextFor(envelope);
         const prompt = renderInbound(envelope, {
-          goalsSnapshot: readGoalsSnapshot(goalsPath),
-          skillsSnapshot: renderInstalledSkills(scanSkills(skillRoots)),
+          goalsSnapshot: readGoalsSnapshot(ctx.goalsPath),
+          skillsSnapshot: renderInstalledSkills(scanSkills(ctx.skillRoots)),
         });
-        transcript.write("handoff", {
+        ctx.transcript.write("handoff", {
           direction: "in",
           from: envelope.role,
           handoffKind: envelope.kind,
@@ -334,7 +406,7 @@ async function main() {
           text: envelope.text || "",
           payload: envelope.payload || {},
         });
-        await runPhase(prompt);
+        await runPhase(ctx, prompt);
       }
     }
   } catch (e) {
@@ -343,12 +415,15 @@ async function main() {
     log(`FATAL: ${message}`);
     await broker.event("fatal", { message });
     await new Promise((r) => setTimeout(r, 200));
+    for (const ctx of contexts.values()) ctx.transcript.close();
     transcript.close();
     process.exit(1);
   }
 
-  transcript.write("system", { content: "agent exiting", stats: session.stats() });
-  await broker.event("exiting", session.stats());
+  const stats = rootCtx.session.stats();
+  transcript.write("system", { content: "agent exiting", stats });
+  await broker.event("exiting", stats);
+  for (const ctx of contexts.values()) ctx.transcript.close();
   transcript.close();
 }
 

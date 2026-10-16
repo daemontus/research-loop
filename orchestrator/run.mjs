@@ -72,6 +72,9 @@ function parseArgs(argv) {
     open: true,
     discoverModels: true,
     skipSkills: false,
+    // null = unlimited nesting; 0 disables subagents.
+    maxSubagentDepth: null,
+    maxSubagentDepthSet: false,
     researcherContextWindow: null,
     advisorContextWindow: null,
     researcherMaxTokens: null,
@@ -113,6 +116,15 @@ function parseArgs(argv) {
       case "--no-open": args.open = false; break;
       case "--no-model-discovery": args.discoverModels = false; break;
       case "--skip-skills": args.skipSkills = true; args.skipSkillsSet = true; break;
+      case "--max-subagent-depth": {
+        const v = next();
+        args.maxSubagentDepth = v === "unlimited" ? null : Number(v);
+        args.maxSubagentDepthSet = true;
+        if (args.maxSubagentDepth !== null && !(Number.isInteger(args.maxSubagentDepth) && args.maxSubagentDepth >= 0)) {
+          throw new Error(`--max-subagent-depth must be a non-negative integer or 'unlimited', got ${v}`);
+        }
+        break;
+      }
       case "--researcher-context-window": args.researcherContextWindow = Number(next()); break;
       case "--advisor-context-window": args.advisorContextWindow = Number(next()); break;
       case "--researcher-max-tokens": args.researcherMaxTokens = Number(next()); break;
@@ -127,6 +139,7 @@ function parseArgs(argv) {
             "  --initial-sandbox <dir>  --config <pi_config.json>",
             "  --local | --docker | --faux",
             "  --no-open  --no-model-discovery  --skip-skills",
+            "  --max-subagent-depth N   limit subagent nesting (0 = no subagents; default unlimited)",
             "  --researcher-context-window N  --advisor-context-window N",
             "  --researcher-max-tokens N      --advisor-max-tokens N",
             "  --max-handoffs N  --wallclock-ms N  --max-turns-per-phase N",
@@ -215,6 +228,7 @@ function readRunMeta(runDir) {
     researcherModel: meta.researcherModel || run.researcherModel || null,
     advisorModel: meta.advisorModel || run.advisorModel || null,
     skipSkills: Boolean(meta.skipSkills ?? run.skipSkills ?? start.skipSkills),
+    maxSubagentDepth: run.maxSubagentDepth ?? meta.maxSubagentDepth ?? null,
     label: meta.label || run.label || "",
     state: meta.state || null,
     uiUrl: meta.uiUrl || "",
@@ -228,10 +242,17 @@ function localConnectHost(host) {
 }
 
 let fauxCallSeq = 0;
-function fauxStep(text, toolName, payload) {
+/** One scripted assistant message; `files` are written (write_file) before the tool call. */
+function fauxStep(text, toolName, payload, files = {}) {
   return {
     content: [
       { type: "text", text },
+      ...Object.entries(files).map(([p, content]) => ({
+        type: "toolCall",
+        id: `call-${++fauxCallSeq}`,
+        name: "write_file",
+        arguments: { path: p, content },
+      })),
       { type: "toolCall", id: `call-${++fauxCallSeq}`, name: toolName, arguments: payload },
     ],
     stopReason: "toolUse",
@@ -250,12 +271,55 @@ function fauxScenario() {
           skills: [],
         }),
         fauxStep("No skills to install.", "confirm_skills_installed", { installed: [] }),
-        fauxStep("Decomposed task; proposing G1.", "submit_plan", {
+        fauxStep(
+          "Decomposed task; proposing G1.",
+          "submit_plan",
+          {
+            goalId: "G1",
+            title: "Survey the problem",
+            plan: ["Delegate a background survey to a subagent", "Write notes"],
+            acceptanceCriteria: ["notes.md exists", "summarizes the problem"],
+          },
+          { "GOALS.md": "# Research task\nDemo\n\n## Goals\n### G1 — Survey the problem [status: in_progress]\n### G2 — Draft an approach [status: proposed]\n" },
+        ),
+        fauxStep("Delegating the background survey.", "propose_subagent", {
+          title: "Background survey",
           goalId: "G1",
-          title: "Survey the problem",
-          plan: ["Collect background", "Write notes"],
-          acceptanceCriteria: ["notes.md exists", "summarizes the problem"],
+          instructions: "Survey background for the task and summarize it in agents/S1/survey.md.",
+          rationale: "Self-contained; benefits from a clean context.",
+          expectedOutputs: ["agents/S1/survey.md"],
         }),
+        // --- subagent S1 (its own conversation in this same process) ---
+        fauxStep(
+          "Subagent: planning the survey.",
+          "submit_plan",
+          {
+            goalId: "G1",
+            title: "Write the survey",
+            plan: ["Write survey.md"],
+            acceptanceCriteria: ["agents/S1/survey.md exists"],
+          },
+          { "agents/S1/GOALS.md": "# Research task\nBackground survey\n\n## Goals\n### G1 — Write the survey [status: in_progress]\n" },
+        ),
+        fauxStep(
+          "Subagent: survey written.",
+          "submit_result",
+          {
+            goalId: "G1",
+            summary: "Wrote agents/S1/survey.md.",
+            artifacts: ["agents/S1/survey.md"],
+            verification: ["cat agents/S1/survey.md"],
+            status: "complete",
+          },
+          { "agents/S1/survey.md": "# Survey\nBackground notes.\n" },
+        ),
+        fauxStep(
+          "Subagent: done.",
+          "request_task_completion",
+          { summary: "Survey done.", deliverables: ["agents/S1/survey.md"] },
+          { "agents/S1/REPORT.md": "# Report\nWrote the background survey to agents/S1/survey.md.\n" },
+        ),
+        // --- back in the main session ---
         fauxStep("G1 complete.", "submit_result", {
           goalId: "G1",
           summary: "Wrote notes.md.",
@@ -287,6 +351,16 @@ function fauxScenario() {
       responses: [
         fauxStep("No skills needed.", "approve_skills", { feedback: "ok" }),
         fauxStep("Plan is sound.", "approve_plan", { goalId: "G1", feedback: "go" }),
+        fauxStep("Well scoped.", "approve_subagent", { feedback: "go", conditions: ["keep it short"] }),
+        // --- subagent S1 ---
+        fauxStep("Plan is sound.", "approve_plan", { goalId: "G1", feedback: "go" }),
+        fauxStep("Verified survey.md.", "accept_result", {
+          goalId: "G1",
+          feedback: "goal met",
+          verification: ["read survey.md"],
+        }),
+        fauxStep("Report is accurate.", "accept_task_completion", { summary: "Survey verified.", feedback: "ok" }),
+        // --- back in the main session ---
         fauxStep("Verified notes.md.", "accept_result", {
           goalId: "G1",
           feedback: "goal met",
@@ -322,6 +396,21 @@ function openBrowser(url) {
   }
 }
 
+/**
+ * --view: prefer the root state recorded in session.json (it has the final
+ * terminal reason), falling back to the replayed one.
+ */
+function replayedRootState(recorded, replayed) {
+  return {
+    ...replayed,
+    state: recorded.state,
+    terminalReason: recorded.terminalReason ?? replayed.terminalReason,
+    finishedAt: recorded.finishedAt ?? replayed.finishedAt,
+    startedAt: recorded.startedAt ?? replayed.startedAt,
+    humanDecisions: recorded.humanDecisions ?? replayed.humanDecisions,
+  };
+}
+
 function modelIdOnly(spec) {
   const raw = String(spec || "");
   const sep = raw.indexOf(":");
@@ -334,7 +423,8 @@ function modelIdOnly(spec) {
  * Compose the prompt an agent receives when a session is resumed. Stresses that
  * the container is fresh and the environment must be rebuilt from the sandbox.
  */
-function buildResumePrompt({ task, initialState, expected, goal, resumePrompt }) {
+function buildResumePrompt({ task, initialState, expected, goal, resumePrompt, agentId = "root" }) {
+  const sub = agentId && agentId !== "root";
   return [
     "This session is being RESUMED after an interruption.",
     "",
@@ -346,13 +436,20 @@ function buildResumePrompt({ task, initialState, expected, goal, resumePrompt })
     "restart it from the beginning.",
     "",
     "## Where we left off",
+    ...(sub
+      ? [
+          `The interruption happened while subagent ${agentId} was running; you are that subagent's`,
+          `${expected || "agent"}. Your subtask instructions are in your system prompt; your goals file is`,
+          `${expected === "advisor" ? "/researcher-sandbox" : "/sandbox"}/agents/${agentId}/GOALS.md.`,
+        ]
+      : []),
     `The previous session was interrupted in state ${initialState}${goal ? ` on goal ${goal}` : ""}.`,
     expected
       ? `You (${expected}) were expected to act next; carry on with that responsibility.`
       : "Control returns to the human; the session awaits a decision.",
     ...(resumePrompt ? ["", "## Extra instructions from the human", resumePrompt] : []),
     "",
-    "## Broad research task",
+    `## ${sub ? "Overall research task (context)" : "Broad research task"}`,
     task,
   ].join("\n");
 }
@@ -454,6 +551,7 @@ async function main() {
       args.advisorModel = runMeta.advisorModel;
     }
     if (!args.skipSkillsSet && runMeta.skipSkills) args.skipSkills = true;
+    if (!args.maxSubagentDepthSet) args.maxSubagentDepth = runMeta.maxSubagentDepth ?? null;
     if ((resumed && !runMeta.researcherModel) || (resumed && !runMeta.advisorModel)) {
       console.warn(
         "[research-loop] warning: models of the original run are unknown; using " +
@@ -499,6 +597,8 @@ async function main() {
 
   const token = randomBytes(24).toString("hex");
   const goalsPath = path.join(researcherSandbox, "GOALS.md");
+  // Subagent records (instructions, metadata, GOALS snapshot, final report).
+  const agentsDir = path.join(runDir, "agents");
 
   const configPath = path.isAbsolute(args.config) ? args.config : path.resolve(args.config);
 
@@ -517,8 +617,17 @@ async function main() {
       initialNote,
       skipSkills: args.skipSkills,
       installedSkillsPath: path.join(researcherSandbox, "skills"),
+      researcherSandbox,
+      agentsDir,
       viewOnly: true,
-      seedState: runMeta?.state || replaySessionLog(transcriptDir).state,
+      ...(() => {
+        const replayed = replaySessionLog(transcriptDir, { agentsDir });
+        return {
+          seedState: runMeta?.state?.state ? replayedRootState(runMeta.state, replayed.state) : replayed.state,
+          seedAgents: replayed.agents,
+          seedActiveId: replayed.activeId,
+        };
+      })(),
     });
     console.log(`[research-loop] viewing session ${sessionId}`);
     console.log(`[research-loop] UI: ${control.url}`);
@@ -580,7 +689,7 @@ async function main() {
   // log so the machines pick up where the previous process left off.
   let replay = null;
   if (resumed) {
-    replay = replaySessionLog(transcriptDir);
+    replay = replaySessionLog(transcriptDir, { agentsDir });
     if (!replay.started) {
       throw new Error(
         `cannot resume ${runDir}: no usable session log found; start a new run instead`,
@@ -603,6 +712,7 @@ async function main() {
         researcherModel: args.researcherModel,
         advisorModel: args.advisorModel,
         skipSkills: args.skipSkills,
+        maxSubagentDepth: args.maxSubagentDepth,
       },
       null,
       2,
@@ -625,23 +735,35 @@ async function main() {
     viewOnly: resumed,
     initialState: replay?.state || null,
     initialResearcherSteps: replay?.researcherSteps || 0,
+    initialAgents: replay?.agents || null,
+    initialActiveId: replay?.activeId || null,
+    initialRootPendingProposal: replay?.rootPendingProposal || null,
+    researcherSandbox,
+    agentsDir,
+    maxSubagentDepth: args.maxSubagentDepth,
   });
   console.log(`[research-loop] session ${sessionId}${resumed ? " (resumed)" : ""}`);
   console.log(`[research-loop] UI: ${control.url}`);
 
   if (resumed) {
-    const expected = expectedRoleForState(replay.state.state);
-    const goal = replay.state.currentGoalId;
+    const activeId = replay.activeId || "root";
+    const active = activeId === "root" ? { state: replay.state } : replay.agents.find((a) => a.id === activeId);
+    const expected = expectedRoleForState(active.state.state);
+    const goal = active.state.currentGoalId;
     const resumeText = buildResumePrompt({
       task: args.task,
-      initialState: replay.state.state,
+      initialState: active.state.state,
       expected,
       goal,
       resumePrompt: args.resumePrompt,
       skipSkills: args.skipSkills,
+      agentId: activeId,
     });
     control.broker.resume(resumeText);
-    console.log(`[research-loop] resumed in state ${replay.state.state} (${expected || "awaiting human"})`);
+    console.log(
+      `[research-loop] resumed in state ${active.state.state}` +
+        `${activeId !== "root" ? ` (subagent ${activeId})` : ""} (${expected || "awaiting human"})`,
+    );
   }
 
   // Ctrl-C / termination should abort the session and let the cleanup path
@@ -665,6 +787,7 @@ async function main() {
     abortTimeoutMs: args.abortTimeoutMs,
     phaseTimeoutMs: args.phaseTimeoutMs,
     skipSkills: args.skipSkills,
+    maxSubagentDepth: args.maxSubagentDepth,
   };
 
   const localBrokerUrl = `http://${localConnectHost(args.host)}:${control.port}`;
@@ -889,6 +1012,7 @@ async function main() {
     researcherModel: args.researcherModel,
     advisorModel: args.advisorModel,
     skipSkills: args.skipSkills,
+    maxSubagentDepth: args.maxSubagentDepth,
     token,
     state: control.broker.snapshot(),
     agentStats: agentEvents,

@@ -64,11 +64,11 @@ export function createBrokerClient({ brokerUrl, role, token }) {
     },
 
     /** Best-effort live output for the WebUI (not persisted, never throws). */
-    async partial(ops) {
+    async partial(ops, agentId = null) {
       try {
         return await jsonFetch(`${base}/api/partial`, {
           method: "POST",
-          body: JSON.stringify({ role, ops }),
+          body: JSON.stringify({ role, ops, agentId }),
           signal: AbortSignal.timeout(5000),
         });
       } catch {

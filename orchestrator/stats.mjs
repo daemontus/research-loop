@@ -130,6 +130,18 @@ function summarizeRole(entries) {
   };
 }
 
+function listSubagentIds(transcriptDir) {
+  try {
+    return fs
+      .readdirSync(path.join(transcriptDir, "agents"), { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name)
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  } catch {
+    return [];
+  }
+}
+
 /** Recursively list files under `root`, skipping the given directory names. */
 function listFiles(root, skipDirs = new Set()) {
   const files = [];
@@ -229,14 +241,25 @@ export function buildRunStats(opts) {
     orchestratorFinishedAt,
   } = opts;
 
+  // Subagent transcripts live under transcripts/agents/<id>/; per-role totals
+  // include them, and each subagent is also summarized on its own.
+  const subagentIds = listSubagentIds(transcriptDir);
   const byRole = {};
   const goalIds = new Set();
+  const subagents = {};
   for (const role of ROLES) {
     const entries = readJsonl(path.join(transcriptDir, `${role}.jsonl`));
-    byRole[role] = summarizeRole(entries);
     for (const entry of entries) {
       if (entry.kind === "handoff" && entry.goalId) goalIds.add(String(entry.goalId));
     }
+    for (const id of subagentIds) {
+      const sub = readJsonl(path.join(transcriptDir, "agents", id, `${role}.jsonl`));
+      const summary = summarizeRole(sub);
+      (subagents[id] ||= { tokens: {}, turns: {} }).tokens[role] = summary.tokens;
+      subagents[id].turns[role] = summary.messages.assistant;
+      entries.push(...sub);
+    }
+    byRole[role] = summarizeRole(entries);
   }
 
   const tokens = emptyUsage();
@@ -349,6 +372,10 @@ export function buildRunStats(opts) {
       actions: decisions.map((d) => d?.action ?? "unknown"),
     },
     recovery,
+    subagents: {
+      count: subagentIds.length,
+      byAgent: subagents,
+    },
     skills: {
       count: skillNames.length,
       names: skillNames,
@@ -390,7 +417,8 @@ export function renderStatsSummary(stats) {
     `[research-loop]   turns: researcher ${stats.turns.researcher}, advisor ${stats.turns.advisor}; ` +
       `tool calls: researcher ${stats.toolCalls.researcher.total}, advisor ${stats.toolCalls.advisor.total}`,
     `[research-loop]   handoffs: ${stats.handoffs.total}; goals: ${stats.goals.count}; ` +
-      `skills: ${stats.skills.count}; artifacts: ${stats.artifacts.count}`,
+      `skills: ${stats.skills.count}; artifacts: ${stats.artifacts.count}` +
+      (stats.subagents?.count ? `; subagents: ${stats.subagents.count}` : ""),
   ];
   const retries = [];
   for (const role of ROLES) {

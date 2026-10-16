@@ -9,9 +9,14 @@
  *     text: string,        // the sender's final assistant text
  *     payload: object,     // structured control-tool arguments
  *     ts: number,
- *     seq: number          // assigned by the control plane
+ *     seq: number,         // assigned by the control plane
+ *     agentId?: string,    // which (sub)agent session this belongs to; default "root"
+ *     agent?: object       // subagent metadata attached by the control plane
  *   }
  */
+
+/** Id of the top-level (human-supervised) agent session. */
+export const ROOT_AGENT_ID = "root";
 
 export const RESEARCHER_KINDS = [
   "skills_proposal",
@@ -19,6 +24,7 @@ export const RESEARCHER_KINDS = [
   "proposal",
   "result",
   "task_request",
+  "subagent_proposal",
 ];
 export const ADVISOR_KINDS = [
   "skills_approved",
@@ -29,9 +35,11 @@ export const ADVISOR_KINDS = [
   "result_changes",
   "task_accepted",
   "task_changes",
+  "subagent_approved",
+  "subagent_changes",
 ];
 export const HUMAN_KINDS = ["human_message", "human_decision"];
-export const CONTROL_KINDS = ["start", "prompt", "session_done", "abort"];
+export const CONTROL_KINDS = ["start", "prompt", "session_done", "abort", "agent_done"];
 
 export const ALL_KINDS = new Set([
   ...RESEARCHER_KINDS,
@@ -55,6 +63,9 @@ export const TOOL_TO_KIND = {
   request_result_changes: "result_changes",
   accept_task_completion: "task_accepted",
   request_task_changes: "task_changes",
+  propose_subagent: "subagent_proposal",
+  approve_subagent: "subagent_approved",
+  reject_subagent: "subagent_changes",
 };
 
 export const CONTROL_TOOL_NAMES = new Set(Object.keys(TOOL_TO_KIND));
@@ -96,6 +107,9 @@ export function validateEnvelope(envelope) {
   if (typeof envelope.text !== "string") {
     return { ok: false, error: "text must be a string" };
   }
+  if (envelope.agentId != null && typeof envelope.agentId !== "string") {
+    return { ok: false, error: "agentId must be a string or null" };
+  }
   return { ok: true };
 }
 
@@ -114,7 +128,8 @@ function bulletize(items) {
 export function renderInbound(envelope, { goalsSnapshot = "", skillsSnapshot = "" } = {}) {
   const lines = [
     `[handoff from ${envelope.role} | kind=${envelope.kind}` +
-      `${envelope.goalId ? ` | goal=${envelope.goalId}` : ""}]`,
+      `${envelope.goalId ? ` | goal=${envelope.goalId}` : ""}` +
+      `${envelope.agentId && envelope.agentId !== ROOT_AGENT_ID ? ` | agent=${envelope.agentId}` : ""}]`,
     "",
   ];
   if (envelope.text && envelope.text.trim()) {
@@ -151,6 +166,9 @@ export function kindLabel(kind) {
     task_changes: "Task completion changes requested",
     human_message: "Human message",
     human_decision: "Human decision",
+    subagent_proposal: "Subagent proposed",
+    subagent_approved: "Subagent approved",
+    subagent_changes: "Subagent rejected",
   };
   return labels[kind] || kind;
 }

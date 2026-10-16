@@ -35,11 +35,36 @@ function sendJson(res, status, obj) {
   res.end(body);
 }
 
+/** Subagent transcripts: `agents/<id>/<role>.jsonl` under the transcript dir. */
+function subagentTranscriptFiles(dir) {
+  const files = [];
+  let ids = [];
+  try {
+    ids = fs.readdirSync(path.join(dir, "agents"), { withFileTypes: true });
+  } catch {
+    return files;
+  }
+  for (const ent of ids) {
+    if (!ent.isDirectory()) continue;
+    for (const role of ["researcher", "advisor"]) {
+      const rel = path.join("agents", ent.name, `${role}.jsonl`);
+      if (fs.existsSync(path.join(dir, rel))) files.push(rel);
+    }
+  }
+  return files;
+}
+
 class TranscriptTailer {
   constructor(dir, files) {
     this.dir = dir;
     this.offsets = new Map(files.map((f) => [f, 0]));
     this.listeners = new Set();
+  }
+  /** Pick up transcript files created since the last call (new subagents). */
+  discover() {
+    for (const file of subagentTranscriptFiles(this.dir)) {
+      if (!this.offsets.has(file)) this.offsets.set(file, 0);
+    }
   }
   onData(fn) {
     this.listeners.add(fn);
@@ -54,6 +79,7 @@ class TranscriptTailer {
     }
   }
   tick() {
+    this.discover();
     const batch = [];
     for (const file of this.offsets.keys()) {
       const abs = path.join(this.dir, file);
@@ -131,7 +157,10 @@ const TRANSCRIPT_FILES = ["researcher.jsonl", "advisor.jsonl", "session.jsonl"];
  */
 function readTranscriptHistory(dir, offsets = null) {
   const entries = [];
-  for (const file of TRANSCRIPT_FILES) {
+  // Only files the tailer knows about: a newer file is read from 0 by its next
+  // tick, so reading it here too would duplicate its entries.
+  const files = offsets ? [...offsets.keys()] : [...TRANSCRIPT_FILES, ...subagentTranscriptFiles(dir)];
+  for (const file of files) {
     let buf;
     try {
       buf = fs.readFileSync(path.join(dir, file));
@@ -165,7 +194,22 @@ export function startControlPlane(opts) {
     installedSkillsPath: opts.installedSkillsPath || null,
     initialState: opts.initialState || null,
     initialResearcherSteps: opts.initialResearcherSteps || 0,
+    initialAgents: opts.initialAgents || null,
+    initialActiveId: opts.initialActiveId || null,
+    initialRootPendingProposal: opts.initialRootPendingProposal || null,
+    researcherSandbox: opts.researcherSandbox || (opts.goalsPath ? path.dirname(opts.goalsPath) : null),
+    agentsDir: opts.agentsDir || null,
+    maxSubagentDepth: opts.maxSubagentDepth ?? null,
   });
+  const researcherSandbox =
+    opts.researcherSandbox || (opts.goalsPath ? path.dirname(opts.goalsPath) : null);
+
+  /** GOALS.md of the root (default) or of a subagent. */
+  function goalsPathFor(agentId) {
+    if (!agentId || agentId === "root") return opts.goalsPath;
+    if (!/^[A-Za-z0-9_-]+$/.test(agentId) || !researcherSandbox) return null;
+    return path.join(researcherSandbox, "agents", agentId, "GOALS.md");
+  }
 
   const tailer = new TranscriptTailer(opts.transcriptDir, TRANSCRIPT_FILES);
   tailer.start();
@@ -239,11 +283,18 @@ export function startControlPlane(opts) {
       if (route === "GET /api/goals") {
         let text = "";
         try {
-          text = fs.readFileSync(opts.goalsPath, "utf8");
+          text = fs.readFileSync(goalsPathFor(url.searchParams.get("agent")), "utf8");
         } catch {
           text = "";
         }
         sendJson(res, 200, { ok: true, goals: text });
+        return;
+      }
+
+      // Subagent metadata: instructions, status and (when finished) report.
+      if (route === "GET /api/agent") {
+        const info = broker.agentInfo(url.searchParams.get("agent") || "root");
+        sendJson(res, info ? 200 : 404, info ? { ok: true, agent: info } : { ok: false, error: "unknown agent" });
         return;
       }
 
@@ -310,7 +361,8 @@ export function startControlPlane(opts) {
           return;
         }
         const ops = Array.isArray(body.ops) ? body.ops : [];
-        if (ops.length) broadcastSse({ type: "partial", agent: body.role, ops });
+        const agentId = typeof body.agentId === "string" && body.agentId ? body.agentId : "root";
+        if (ops.length) broadcastSse({ type: "partial", agent: body.role, agentId, ops });
         sendJson(res, 200, { ok: true });
         return;
       }
@@ -331,7 +383,7 @@ export function startControlPlane(opts) {
 
       if (route === "POST /api/human/message") {
         const body = JSON.parse((await readBody(req)) || "{}");
-        const result = broker.humanMessage(body.target, body.text, body.payload || {});
+        const result = broker.humanMessage(body.target, body.text, body.payload || {}, body.agentId || null);
         sendJson(res, result.ok ? 200 : 409, result);
         return;
       }
@@ -355,7 +407,9 @@ export function startControlPlane(opts) {
       // View-only mode (e.g. --view a finished run) must not deliver the start
       // message or touch agents; just seed the final state for display.
       if (!opts.viewOnly) broker.start();
-      if (opts.seedState) broker.seed(opts.seedState);
+      if (opts.seedState) {
+        broker.seed(opts.seedState, { agents: opts.seedAgents || null, activeId: opts.seedActiveId || null });
+      }
       const extraServers = [];
       resolve({
         server,
