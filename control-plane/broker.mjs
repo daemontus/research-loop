@@ -175,6 +175,7 @@ export function replaySessionLog(transcriptDir, { agentsDir = null } = {}) {
           researcherSteps += 1;
         }
         if (e.handoffKind === "subagent_proposal") agent.pendingProposal = envelope;
+        if (e.handoffKind === "proposal") agent.lastPlanExecution = envelope.payload?.execution || null;
       }
       continue;
     }
@@ -221,6 +222,7 @@ export function replaySessionLog(transcriptDir, { agentsDir = null } = {}) {
     agents: [...agents.values()].filter((a) => a.id !== ROOT_AGENT_ID),
     activeId,
     rootPendingProposal: root.pendingProposal,
+    rootLastPlanExecution: root.lastPlanExecution || null,
   };
 }
 
@@ -242,9 +244,12 @@ export function createBroker({
   initialAgents = null,
   initialActiveId = null,
   initialRootPendingProposal = null,
+  initialRootLastPlanExecution = null,
   researcherSandbox = null,
   agentsDir = null,
   maxSubagentDepth = null,
+  // "encouraged" = supervisor mode for the main researcher (see prompts.mjs).
+  delegation = "optional",
 }) {
   const events = new EventEmitter();
   const roles = ROLES;
@@ -273,6 +278,7 @@ export function createBroker({
     finishedAt: null,
     state: initialState ? { ...initialState } : createSessionState(),
     pendingProposal: initialRootPendingProposal || null,
+    lastPlanExecution: initialRootLastPlanExecution || null,
     snapshot: {},
   });
   for (const a of initialAgents || []) agents.set(a.id, { ...a });
@@ -373,8 +379,43 @@ export function createBroker({
 
   function acceptDeliveries(result, agentId) {
     for (const d of result.deliveries || []) {
-      deliver(d.to, d.envelope, agentId);
+      const envelope = d.to === "researcher" ? withDelegationHint(agentId, d.envelope) : d.envelope;
+      deliver(d.to, envelope, agentId);
     }
+  }
+
+  function canSpawn(agent) {
+    return maxSubagentDepth == null || agent.depth + 1 <= maxSubagentDepth;
+  }
+
+  // Handoffs after which the researcher picks its next goal.
+  const NEXT_GOAL_KINDS = new Set(["result_accepted", "task_changes", "human_message"]);
+
+  /**
+   * Remind a researcher that may delegate about it at decision points, so the
+   * option stays near the end of its (long) context: right after a plan marked
+   * `execution: "subagent"` is approved, and whenever it picks the next goal.
+   */
+  function withDelegationHint(agentId, envelope) {
+    const agent = agents.get(agentId);
+    if (!agent || !canSpawn(agent)) return envelope;
+    const supervisor = agentId === ROOT_AGENT_ID && delegation === "encouraged";
+    let hint = null;
+    if (envelope.kind === "plan_approved" && agent.lastPlanExecution === "subagent") {
+      const goal = envelope.goalId || agent.state.currentGoalId;
+      hint =
+        `[orchestrator] Your approved plan${goal ? ` for ${goal}` : ""} has execution: "subagent". ` +
+        `Delegate it now with propose_subagent${goal ? ` (goalId ${goal})` : ""}, with complete, ` +
+        "self-contained instructions; do not start the work yourself.";
+    } else if (NEXT_GOAL_KINDS.has(envelope.kind) || envelope.payload?.subagentId) {
+      hint =
+        "[orchestrator] Before you plan the next goal, decide its `execution`: " +
+        (supervisor
+          ? "you are the supervisor, so delegate it to a subagent unless it is small, tightly coupled, or integration work."
+          : "delegate it to a subagent if it is substantial and self-contained, to keep your context focused.");
+    }
+    if (!hint) return envelope;
+    return { ...envelope, text: `${envelope.text || ""}\n\n${hint}`.trim() };
   }
 
   function finishIfTerminal(result) {
@@ -718,6 +759,18 @@ export function createBroker({
     if (agentId !== activeId) {
       return { ok: false, error: `agent ${agentId} is not active (active: ${activeId})`, state: stateNow() };
     }
+    // Not this role's turn (e.g. a stale message made it act again after its
+    // handoff): refuse quietly. A correction prompt would start yet another
+    // out-of-turn phase; instead the agent waits for its next message.
+    const expectedNow = expectedRole(agent.state.state);
+    if (expectedNow !== role) {
+      const error =
+        `not your turn: ${expectedNow ? `the ${expectedNow}` : "nobody (waiting on a human or a subagent)"} ` +
+        `is expected to act in state ${agent.state.state}; your handoff was discarded. Wait for the next message`;
+      logSession("reject", { from: role, agentId, error, outOfTurn: true, handoffKind: envelope.kind });
+      events.emit("state", snapshot());
+      return { ok: false, error, state: stateNow(), wait: true };
+    }
     const valid = validateEnvelope(envelope);
     if (!valid.ok) {
       deliverCorrection(role, valid.error);
@@ -770,6 +823,7 @@ export function createBroker({
       researcherSteps += 1;
     }
     if (envelope.kind === "subagent_proposal") agent.pendingProposal = envelope;
+    if (envelope.kind === "proposal") agent.lastPlanExecution = envelope.payload?.execution || null;
     acceptDeliveries(result, agentId);
     if (agentId === ROOT_AGENT_ID) finishIfTerminal(result);
     if (result.spawn) spawnSubagent(agent, envelope);

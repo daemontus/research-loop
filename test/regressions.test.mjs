@@ -37,12 +37,28 @@ describe("broker regressions", () => {
     broker.start(); // RESEARCHER_DECOMPOSE
     assert.equal(broker.receiveAgentEnvelope("researcher", envelope("researcher", "result")).ok, false);
     assert.equal(broker.receiveAgentEnvelope("researcher", envelope("researcher", "proposal")).ok, true);
-    // Out of turn (advisor is expected): one rejection after progress must not abort.
-    assert.equal(broker.receiveAgentEnvelope("researcher", envelope("researcher", "result")).ok, false);
+    // Invalid in-turn handoff (advisor expected): one rejection after progress must not abort.
+    assert.equal(broker.receiveAgentEnvelope("advisor", envelope("advisor", "result_accepted")).ok, false);
     assert.notEqual(broker.snapshot().state, STATES.ABORTED);
     // A second consecutive one hits the cap.
-    broker.receiveAgentEnvelope("researcher", envelope("researcher", "result"));
+    broker.receiveAgentEnvelope("advisor", envelope("advisor", "result_accepted"));
     assert.equal(broker.snapshot().state, STATES.ABORTED);
+  });
+
+  it("refuses out-of-turn handoffs quietly (no correction prompt, not counted)", async () => {
+    const broker = newBroker({ maxRejections: 2 });
+    broker.start();
+    broker.receiveAgentEnvelope("researcher", envelope("researcher", "proposal"));
+    const before = (await broker.poll("researcher", 0, 50)).cursor;
+    for (let i = 0; i < 5; i += 1) {
+      const r = broker.receiveAgentEnvelope("researcher", envelope("researcher", "result"));
+      assert.equal(r.ok, false);
+      assert.equal(r.wait, true);
+      assert.match(r.error, /not your turn/);
+    }
+    assert.notEqual(broker.snapshot().state, STATES.ABORTED);
+    const after = await broker.poll("researcher", before, 50);
+    assert.equal(after.messages.length, 0, "no correction prompt for the researcher");
   });
 
   it("never downgrades a DONE session to ABORTED", () => {

@@ -32,10 +32,44 @@ import { providerRequestHeaders } from "./client-identity.mjs";
 import { streamAgentEvent } from "./partial-stream.mjs";
 
 const DEFAULT_MAX_ABORT_RETRIES = 5;
-const DEFAULT_MAX_RATE_LIMIT_RETRIES = 10;
-const DEFAULT_RATE_LIMIT_BACKOFF_MS = 60000;
-const DEFAULT_MAX_PROVIDER_ERROR_RETRIES = 3;
+// Provider outages (5xx, dropped connections, 429, gateway errors) are retried
+// with exponential backoff until a time budget runs out, rather than a fixed
+// number of attempts: base * 2^n, capped per wait, with +-20% jitter. The
+// budget restarts after any successful model turn.
+const DEFAULT_RETRY_BUDGET_MS = 8 * 60 * 60 * 1000;
+const DEFAULT_RETRY_MAX_DELAY_MS = 15 * 60 * 1000;
+const DEFAULT_RATE_LIMIT_BACKOFF_MS = 30000;
 const DEFAULT_PROVIDER_ERROR_BACKOFF_MS = 5000;
+const RETRY_JITTER = 0.2;
+
+/** Compact human duration, e.g. "8m 32s" / "1h 5m". */
+export function formatWait(ms) {
+  const sec = Math.max(0, Math.round(ms / 1000));
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  if (h) return `${h}h ${m}m`;
+  if (m) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+/**
+ * Delay before retry number `attempt` (0-based): base * 2^attempt, capped at
+ * `maxDelayMs`, with symmetric jitter (`random` returns [0, 1)).
+ */
+export function backoffDelay(attempt, { baseMs, maxDelayMs, jitter = RETRY_JITTER, random = Math.random }) {
+  if (!(baseMs > 0)) return 0;
+  const raw = Math.min(maxDelayMs, baseMs * 2 ** Math.min(attempt, 30));
+  return Math.max(0, Math.round(raw * (1 + jitter * (2 * random() - 1))));
+}
+
+/** Seconds from a "retry after N" hint in a provider error, if any. */
+export function retryAfterMs(text) {
+  const m = /retry[-_ ]?after["':\s]+(\d+(?:\.\d+)?)\s*(ms|s|sec|seconds)?/i.exec(String(text || ""));
+  if (!m) return 0;
+  const n = Number(m[1]);
+  return m[2] === "ms" ? n : n * 1000;
+}
 
 /** Collect text blocks from the last assistant message. */
 function lastAssistantText(messages) {
@@ -87,17 +121,31 @@ export class AgentSession {
     // 0 = no per-attempt abort (run may continue indefinitely; monitor via UI).
     this.abortTimeoutMs = opts.abortTimeoutMs ?? 0;
     this.maxAbortRetries = opts.maxAbortRetries ?? DEFAULT_MAX_ABORT_RETRIES;
-    this.maxRateLimitRetries = opts.maxRateLimitRetries ?? DEFAULT_MAX_RATE_LIMIT_RETRIES;
+    // Optional hard caps on outage retries per phase (default: time budget only).
+    this.maxRateLimitRetries = opts.maxRateLimitRetries ?? Infinity;
     this.rateLimitBackoffMs = opts.rateLimitBackoffMs ?? DEFAULT_RATE_LIMIT_BACKOFF_MS;
+    // Total time to keep retrying one outage (0 = do not retry outages).
+    this.retryBudgetMs = opts.retryBudgetMs ?? DEFAULT_RETRY_BUDGET_MS;
+    this.retryMaxDelayMs = opts.retryMaxDelayMs ?? DEFAULT_RETRY_MAX_DELAY_MS;
+    this.random = opts.random ?? Math.random;
+    // The current outage: when it started and how many retries it has had.
+    // Cleared by any successful model turn.
+    this.outage = null;
+    // Set when history was compacted because of a context-overflow error; if
+    // the (now much smaller) request is rejected the same way, the "overflow"
+    // was really the provider failing, so it is retried with backoff instead.
+    this.overflowCompacted = false;
     this.maxContextOverflowRetries = opts.maxContextOverflowRetries ?? 3;
     // Safety cap on proximity-triggered compactions within a run, so a prompt
     // that cannot be shrunk enough does not compact forever.
     this.maxProximityCompactions = opts.maxProximityCompactions ?? 20;
-    this.maxProviderRetries = opts.maxProviderRetries ?? 4;
+    // pi-ai's own quick retries inside each attempt; kept low so they do not
+    // multiply with the outage backoff below.
+    this.maxProviderRetries = opts.maxProviderRetries ?? 2;
     this.maxRetryDelayMs = opts.maxRetryDelayMs ?? 60000;
     // Transient provider/transport errors (e.g. "terminated") recovered by
     // trimming the failed turn and continuing from the last consistent point.
-    this.maxProviderErrorRetries = opts.maxProviderErrorRetries ?? DEFAULT_MAX_PROVIDER_ERROR_RETRIES;
+    this.maxProviderErrorRetries = opts.maxProviderErrorRetries ?? Infinity;
     this.providerErrorBackoffMs =
       opts.providerErrorBackoffMs ?? DEFAULT_PROVIDER_ERROR_BACKOFF_MS;
     // 0 = no hard per-phase wall clock.
@@ -129,11 +177,15 @@ export class AgentSession {
     this.controlState = opts.controlState || { pendingHandoff: null };
 
     this.agent = null;
+    // Messages injected into the running conversation (see steer()) that the
+    // agent loop has not consumed yet; re-queued when the Agent is recreated.
+    this.pendingSteer = [];
+    this.running = false;
   }
 
   makeAgent() {
     const session = this;
-    return new Agent({
+    const agent = new Agent({
       initialState: {
         systemPrompt: this.systemPrompt,
         model: this.model,
@@ -174,6 +226,25 @@ export class AgentSession {
         return false;
       },
     });
+    for (const message of this.pendingSteer) agent.steer(message);
+    return agent;
+  }
+
+  /**
+   * Inject a user message into the conversation without starting a phase:
+   * it is added after the current model turn of a running phase, or at the
+   * start of the next phase if none is running (the agent loop drains its
+   * steering queue at both points, and stopping after a control tool leaves
+   * the queue intact).
+   */
+  steer(text) {
+    const message = { role: "user", content: [{ type: "text", text }], timestamp: Date.now() };
+    this.pendingSteer.push(message);
+    this.agent?.steer(message);
+  }
+
+  isRunning() {
+    return this.running;
   }
 
   wire(agent) {
@@ -185,8 +256,19 @@ export class AgentSession {
         session.totalTurns += 1;
       }
       if (event.type === "message_end") {
+        const steered = session.pendingSteer.indexOf(event.message);
+        if (steered !== -1) session.pendingSteer.splice(steered, 1);
         session.transcript.writeMessage(event.message);
         const msg = event.message;
+        if (msg?.role === "assistant" && String(msg.stopReason || "").toLowerCase() !== "error") {
+          if (session.outage) {
+            session.transcript.write("system", {
+              content: `provider-recovered: after ${session.outage.attempts} retries over ${formatWait(Date.now() - session.outage.since)}`,
+            });
+          }
+          session.outage = null;
+          if (String(msg.stopReason || "").toLowerCase() !== "aborted") session.overflowCompacted = false;
+        }
         if (msg?.role === "assistant" && msg.usage) {
           session.tokens.input += msg.usage.input || 0;
           session.tokens.output += msg.usage.output || 0;
@@ -275,13 +357,48 @@ export class AgentSession {
   async #maybeRetryRateLimit(caughtError = null) {
     const msgs = this.agent?.state?.messages || [];
     if (!shouldRetryRateLimitTurn(msgs, caughtError)) return false;
+    if (this.phaseRetries.rateLimit >= this.maxRateLimitRetries) {
+      this.agentWarnings.push(`rate-limit retry cap (${this.maxRateLimitRetries})`);
+      return false;
+    }
+    const detail =
+      lastAssistantErrorDetail(msgs)?.errorMessage || (caughtError ? String(caughtError) : "HTTP 429");
+    const ok = await this.#retryOutage({
+      label: "rate-limit-retry",
+      what: "rate limited (HTTP 429)",
+      detail,
+      baseMs: this.rateLimitBackoffMs,
+      minDelayMs: retryAfterMs(detail),
+    });
+    if (!ok) return false;
+    this.rateLimitRetries += 1;
+    this.phaseRetries.rateLimit += 1;
+    return true;
+  }
+
+  /**
+   * Wait out a provider outage with exponential backoff and continue from the
+   * last consistent point. Returns false (giving up) once the outage has
+   * lasted longer than the retry budget, or when retrying is not possible.
+   * The transcript note carries `retryAt` so the WebUI can show the wait.
+   */
+  async #retryOutage({ label, what, detail, baseMs, minDelayMs = 0 }) {
     if (this.#phaseBudgetExceeded()) {
-      this.agentWarnings.push("phase budget exceeded; skipping rate-limit retry");
+      this.agentWarnings.push(`phase budget exceeded; skipping ${label}`);
       return false;
     }
     if (this.maxTurnsPerPhase > 0 && this.phaseTurns >= this.maxTurnsPerPhase) return false;
-    if (this.phaseRetries.rateLimit >= this.maxRateLimitRetries) {
-      this.agentWarnings.push(`rate-limit retry cap (${this.maxRateLimitRetries})`);
+    if (!(this.retryBudgetMs > 0)) return false;
+    const now = Date.now();
+    if (!this.outage) this.outage = { since: now, attempts: 0 };
+    const elapsed = now - this.outage.since;
+    const left = this.retryBudgetMs - elapsed;
+    if (left <= 0) {
+      const warning =
+        `${label}: giving up after ${this.outage.attempts} retries over ${formatWait(elapsed)} ` +
+        `(retry budget ${formatWait(this.retryBudgetMs)}): ${what}`;
+      this.agentWarnings.push(warning);
+      this.transcript.write("system", { content: warning });
       return false;
     }
     try {
@@ -291,18 +408,29 @@ export class AgentSession {
     }
     const trimmed = trimToLastConsistentMessages(this.agent.state.messages);
     if (!canContinueFromMessages(trimmed)) {
-      this.agentWarnings.push("rate-limit retry skipped: no consistent continue point");
+      this.agentWarnings.push(`${label} skipped: no consistent continue point`);
       return false;
     }
-    this.rateLimitRetries += 1;
-    this.phaseRetries.rateLimit += 1;
-    const waitMs = this.rateLimitBackoffMs;
+    const delay = Math.min(
+      left,
+      Math.max(
+        minDelayMs,
+        backoffDelay(this.outage.attempts, {
+          baseMs,
+          maxDelayMs: this.retryMaxDelayMs,
+          random: this.random,
+        }),
+      ),
+    );
+    this.outage.attempts += 1;
+    const retryAt = Date.now() + delay;
     const warning =
-      `rate-limit-retry:${this.rateLimitRetries} after HTTP 429 at turn ${this.totalTurns}` +
-      (waitMs > 0 ? `; waiting ${Math.round(waitMs / 1000)}s` : "");
+      `${label}:${this.outage.attempts} ${what} at turn ${this.totalTurns}` +
+      (detail ? ` (${String(detail).slice(0, 300)})` : "") +
+      `; next attempt in ${formatWait(delay)}, ${formatWait(left - delay)} of retry budget left`;
     this.agentWarnings.push(warning);
-    this.transcript.write("system", { content: warning });
-    if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
+    this.transcript.write("system", { content: warning, retryAt, outageSince: this.outage.since });
+    if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
     await this.#continueFromTrimmed(trimmed);
     return true;
   }
@@ -342,6 +470,21 @@ export class AgentSession {
   async #maybeRetryContextOverflow(caughtError = null) {
     const msgs = this.agent?.state?.messages || [];
     if (!shouldRetryContextOverflow(msgs, caughtError)) return false;
+    if (this.overflowCompacted) {
+      // Rejected as too large again although history was just compacted: the
+      // error was most likely the provider failing (gateways word outages this
+      // way too), so wait it out instead of compacting again.
+      const detail =
+        lastAssistantErrorDetail(msgs)?.errorMessage || (caughtError ? String(caughtError) : "");
+      const ok = await this.#retryOutage({
+        label: "provider-error-retry",
+        what: "request rejected as too large again right after compaction; treating it as a provider failure",
+        detail,
+        baseMs: this.providerErrorBackoffMs,
+      });
+      if (ok) this.providerErrorRetries += 1;
+      return ok;
+    }
     if (this.#phaseBudgetExceeded()) {
       this.agentWarnings.push("phase budget exceeded; skipping context-overflow retry");
       return false;
@@ -368,50 +511,37 @@ export class AgentSession {
     this.agentWarnings.push(warning);
     this.transcript.write("system", { content: warning });
     this.#compactAgentHistory(trimmed);
+    this.overflowCompacted = true;
     await this.agent.continue();
     this.#armPhaseTimer();
     return true;
   }
 
   /**
-   * The provider/transport dropped the stream mid-turn (e.g. undici
-   * "terminated"). Trim the failed turn and continue from the last consistent
-   * point, with a short backoff, up to a bounded cap.
+   * The provider/transport failed (5xx, dropped stream such as undici
+   * "terminated", gateway errors). Trim the failed turn and continue from the
+   * last consistent point after an exponential backoff, until the outage
+   * outlasts the retry budget.
    */
   async #maybeRetryProviderError(caughtError = null) {
     const msgs = this.agent?.state?.messages || [];
     if (!shouldRetryTransientProviderTurn(msgs, caughtError)) return false;
-    if (this.#phaseBudgetExceeded()) {
-      this.agentWarnings.push("phase budget exceeded; skipping provider-error retry");
-      return false;
-    }
-    if (this.maxTurnsPerPhase > 0 && this.phaseTurns >= this.maxTurnsPerPhase) return false;
     if (this.phaseRetries.providerError >= this.maxProviderErrorRetries) {
       this.agentWarnings.push(`provider-error retry cap (${this.maxProviderErrorRetries})`);
       return false;
     }
-    try {
-      await this.agent.waitForIdle();
-    } catch {
-      // ignore
-    }
-    const trimmed = trimToLastConsistentMessages(this.agent.state.messages);
-    if (!canContinueFromMessages(trimmed)) {
-      this.agentWarnings.push("provider-error retry skipped: no consistent continue point");
-      return false;
-    }
+    const detail =
+      lastAssistantErrorDetail(msgs)?.errorMessage || (caughtError ? String(caughtError) : "unknown");
+    const ok = await this.#retryOutage({
+      label: "provider-error-retry",
+      what: "transient provider failure",
+      detail,
+      baseMs: this.providerErrorBackoffMs,
+      minDelayMs: retryAfterMs(detail),
+    });
+    if (!ok) return false;
     this.providerErrorRetries += 1;
     this.phaseRetries.providerError += 1;
-    const detail = lastAssistantErrorDetail(this.agent.state.messages)?.errorMessage || "unknown";
-    const waitMs = this.providerErrorBackoffMs;
-    const warning =
-      `provider-error-retry:${this.providerErrorRetries} after transient provider failure ` +
-      `(${detail}) at turn ${this.totalTurns}` +
-      (waitMs > 0 ? `; waiting ${Math.round(waitMs / 1000)}s` : "");
-    this.agentWarnings.push(warning);
-    this.transcript.write("system", { content: warning });
-    if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
-    await this.#continueFromTrimmed(trimmed);
     return true;
   }
 
@@ -561,6 +691,7 @@ export class AgentSession {
     this.#maybeCompactProactively();
     this.#armPhaseTimer();
     let promptError = null;
+    this.running = true;
     try {
       await this.agent.prompt(text);
       if (await this.#recoverTurns(null)) promptError = null;
@@ -576,6 +707,7 @@ export class AgentSession {
         promptError = retryErr?.message || String(retryErr);
       }
     } finally {
+      this.running = false;
       this.#clearPhaseTimer();
     }
     return {

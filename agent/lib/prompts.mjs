@@ -94,20 +94,53 @@ function researcherSubagentSection(subagent) {
   ].join("\n");
 }
 
-/** How the researcher may delegate (shown when it may still spawn subagents). */
-function researcherDelegationSection(maxDepthNote) {
+/**
+ * How the researcher delegates (shown when it may still spawn subagents).
+ * `supervisor` (the main researcher with --delegation encouraged) makes
+ * delegation the default for substantial goals.
+ */
+function researcherDelegationSection({ supervisor = false, maxDepthNote = null } = {}) {
   return [
-    "## Subagents (optional delegation)",
-    "You may delegate a well-scoped, self-contained subtask to a subagent with",
-    "`propose_subagent` (from the planning or execution phase). It works like briefing a new",
-    "collaborator: a fresh researcher/advisor pair with an empty context, running in this same",
-    "sandbox. Your advisor first approves or rejects the proposal (on rejection, revise it or do",
-    "the work yourself). While the subagent runs, you and your advisor are paused. When it",
-    "finishes you receive its REPORT.md (the subagent's folder is /sandbox/agents/<id>/) and",
-    "continue in the phase you proposed it from. Subagents only see what you write in",
-    "`instructions` (plus files in /sandbox), so be explicit about goal, context, paths,",
-    "constraints, expected outputs and what the report must contain. Do not delegate trivial",
-    "work; delegate when a clean, focused context clearly helps.",
+    "## Delegating goals to subagents",
+    ...(supervisor
+      ? [
+          "You are the SUPERVISOR of this task. Your job is to plan, delegate, integrate, and",
+          "verify, not to do every piece of work yourself. Delegate every substantial,",
+          "self-contained goal (or subgoal) to a subagent by default; keep in-house only planning,",
+          "integration across goals, small fixes, and checks of what subagents delivered. In a",
+          "large task, expect most implementation, investigation and writing goals to be",
+          "delegated. A delegated goal may be large: its subagent can split it further and",
+          "delegate parts of it in turn.",
+          "",
+        ]
+      : []),
+    "Why it matters: your context is finite and spans the whole task. Every goal you execute",
+    "yourself fills it with tool output and file contents, which degrades your later work.",
+    "A subagent starts with a fresh, focused context, does one goal, and hands back a short",
+    "report, so only the outcome enters your context.",
+    "",
+    "Decide for EVERY goal, in submit_plan, who executes it (`execution`, with a one-line",
+    "`executionRationale`):",
+    "- `subagent` when the goal is substantial (more than a handful of tool calls) and",
+    "  self-contained: clear inputs and outputs, checkable acceptance criteria, and it can be",
+    "  briefed in writing without this conversation (e.g. implement or port a module, add a",
+    "  feature with tests, investigate a question, write a documentation chapter, run an",
+    "  experiment batch).",
+    "- `self` when it is small, tightly coupled to decisions you are still making, or mainly",
+    "  integrates the results of other goals.",
+    "",
+    "How a delegated goal runs:",
+    "1. submit_plan with `execution: \"subagent\"`; the advisor reviews the plan as usual.",
+    "2. Once approved, immediately call `propose_subagent` with that `goalId`. Do not start the",
+    "   work yourself. The subagent sees ONLY your `instructions` (plus files in /sandbox), so",
+    "   write them like a brief for a new collaborator: goal, relevant context and decisions,",
+    "   paths, constraints, the acceptance criteria, where outputs go, and what REPORT.md must",
+    "   contain. The advisor approves or rejects the proposal (on rejection, revise it).",
+    "3. While the subagent runs, you and your advisor are paused. Its REPORT.md comes back as",
+    "   your next prompt (its folder is /sandbox/agents/<id>/). Check the outputs, integrate them,",
+    "   then submit_result for the goal; the advisor verifies it as with any result.",
+    "You can also propose a subagent ad hoc during execution when a self-contained piece of",
+    "work turns up.",
     maxDepthNote || null,
   ]
     .filter((line) => line != null)
@@ -165,6 +198,7 @@ export function buildResearcherPrompt({
   subagent = null,
   canSpawnSubagents = true,
   maxSubagentDepth = null,
+  delegation = "optional",
 }) {
   const { toolsMd, skillEntries, skillsReadme } = loadSkillIndex(configDir);
   if (subagent) skipSkills = true;
@@ -173,6 +207,9 @@ export function buildResearcherPrompt({
     maxSubagentDepth != null
       ? `Subagent nesting is limited to depth ${maxSubagentDepth} (you are at depth ${depth}).`
       : null;
+  // Supervisor framing is for the main researcher; subagents are already
+  // focused and delegate only when a piece is clearly worth it.
+  const supervisor = canSpawnSubagents && !subagent && delegation === "encouraged";
   return [
     "You are the RESEARCHER in a two-agent research loop. You own the work: you decompose the",
     "task, propose plans, execute them, and report results. A separate ADVISOR reviews every",
@@ -239,9 +276,14 @@ export function buildResearcherPrompt({
     "1. Decompose the task into a small set of high-level goals (typically 3-7) and write GOALS.md.",
     "2. Pick the first goal, write a concrete plan with checkable acceptance criteria, and call",
     "   submit_plan. Do not start executing before the advisor approves.",
+    canSpawnSubagents
+      ? "   In every plan, decide who executes the goal (`execution`: self or subagent; see below)."
+      : null,
     "3. When executing, apply the installed skills: read the relevant SKILL.md first and follow",
     "   it. In submit_result, report `skillsUsed` with how each skill was applied.",
     "",
+    canSpawnSubagents ? researcherDelegationSection({ supervisor, maxDepthNote: depthNote }) : null,
+    canSpawnSubagents ? "" : null,
     "## Skills are mandatory when relevant",
     "If an installed skill applies to a goal, you MUST use it and say so in the plan",
     "(`skillsToUse`) and in the result (`skillsUsed`). The advisor will reject plans or results",
@@ -261,8 +303,15 @@ export function buildResearcherPrompt({
     "honest revision over silently failing or forcing an approach that no longer fits.",
     "",
     "## Executing an approved goal",
-    "- Do the work with bash and file tools: research, install tools, write code, run tests,",
-    "  gather evidence, write up findings/notes.",
+    canSpawnSubagents
+      ? "- If the approved plan says `execution: \"subagent\"`, call propose_subagent now (see above)."
+      : null,
+    canSpawnSubagents
+      ? "- Otherwise do the work with bash and file tools: research, install tools, write code, run"
+      : "- Do the work with bash and file tools: research, install tools, write code, run tests,",
+    canSpawnSubagents
+      ? "  tests, gather evidence, write up findings/notes."
+      : "  gather evidence, write up findings/notes.",
     "- Keep GOALS.md status current (in_progress -> done).",
     "- When done (or genuinely partial/blocked), call submit_result with the artifact paths and",
     "  the exact verification you ran. Update GOALS.md first.",
@@ -275,8 +324,6 @@ export function buildResearcherPrompt({
     "## GOALS.md",
     GOALS_FORMAT,
     "",
-    canSpawnSubagents ? researcherDelegationSection(depthNote) : null,
-    canSpawnSubagents ? "" : null,
     "## Skills and tools",
     toolsMd ? `Installed tools / conventions:\n${toolsMd}` : null,
     renderSkillsSection({ skillsReadme, skillEntries }) || null,
@@ -295,8 +342,11 @@ export function buildAdvisorPrompt({
   supportsImage = true,
   task = "",
   subagent = null,
+  delegation = "optional",
+  subagentsEnabled = true,
 }) {
   const { toolsMd, skillEntries, skillsReadme } = loadSkillIndex(configDir);
+  const supervisor = subagentsEnabled && !subagent && delegation === "encouraged";
   return [
     "You are the ADVISOR in a two-agent research loop. The RESEARCHER does the work; you review",
     "plans before execution and verify results before a goal is considered met. You are the sole",
@@ -342,6 +392,9 @@ export function buildAdvisorPrompt({
     "  * Is there value we can add beyond what is explicitly in the task?",
     "  * Is this still the highest-value use of remaining budget, or should the goal/direction change?",
     "  * Is there a plausible failure or stronger alternative the plan has not addressed?",
+    subagentsEnabled
+      ? "  * Plans only: is the `execution` choice right? Should this goal go to a subagent to keep the researcher's context focused?"
+      : null,
     "- Separate the two kinds of feedback: `requiredChanges`/`conditions` are HARD gates that",
     "  block acceptance; `advisory` items are fire-and-forget recommendations that never block.",
     "- Be a harsher critic of the high-level solution: concrete, specific, no throat-clearing.",
@@ -367,6 +420,17 @@ export function buildAdvisorPrompt({
     "1. On a `proposal`: read it against GOALS.md and the task. Verify it uses the approved",
     "   skills where relevant (`skillsToUse`) — reject plans that ignore a relevant installed",
     "   skill. Approve with guidance, or request specific changes.",
+    ...(subagentsEnabled
+      ? [
+          "   Check the plan's `execution` choice. The researcher's context is finite and spans the",
+          "   whole task, so a substantial, self-contained goal (clear inputs/outputs, checkable",
+          "   criteria, can be briefed in writing) should normally be delegated (`subagent`);",
+          "   `self` fits small or tightly coupled goals and integration work.",
+          supervisor
+            ? "   This session runs in SUPERVISOR mode: delegation is the default. Request plan changes when a substantial self-contained goal is planned as `self` without a convincing reason."
+            : "   If a substantial self-contained goal is planned as `self`, recommend delegating it (`advisory`, or a required change when it would clearly bloat the researcher's context).",
+        ]
+      : []),
     "2. On a `result`: inspect artifacts in /researcher-sandbox (including installed skills",
     "   under /researcher-sandbox/skills) and reproduce verification where it matters. Confirm",
     "   `skillsUsed` accounts for the relevant installed skills; reject results that ignored",

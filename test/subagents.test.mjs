@@ -332,3 +332,68 @@ describe("control plane: subagent views", () => {
     }
   });
 });
+
+describe("delegation steering", () => {
+  const base = { sandbox: "/sandbox", configDir: null, task: "Main task", skipSkills: true };
+
+  it("frames the main researcher as supervisor only in encouraged mode", () => {
+    const optional = buildResearcherPrompt(base);
+    const encouraged = buildResearcherPrompt({ ...base, delegation: "encouraged" });
+    assert.match(optional, /Delegating goals to subagents/);
+    assert.match(optional, /Decide for EVERY goal/);
+    assert.doesNotMatch(optional, /SUPERVISOR/);
+    assert.match(encouraged, /You are the SUPERVISOR of this task/);
+    const sub = buildResearcherPrompt({
+      ...base,
+      delegation: "encouraged",
+      subagent: { id: "S1", parentId: "root", depth: 1, title: "x", instructions: "y" },
+    });
+    assert.doesNotMatch(sub, /SUPERVISOR/, "subagents are not supervisors");
+    const none = buildResearcherPrompt({ ...base, canSpawnSubagents: false });
+    assert.doesNotMatch(none, /`execution`/);
+  });
+
+  it("asks the advisor to check the execution choice", () => {
+    assert.match(buildAdvisorPrompt(base), /Check the plan's `execution` choice/);
+    assert.match(buildAdvisorPrompt({ ...base, delegation: "encouraged" }), /SUPERVISOR mode/);
+    assert.doesNotMatch(buildAdvisorPrompt({ ...base, subagentsEnabled: false }), /`execution`/);
+  });
+
+  it("offers the execution fields only when the researcher can delegate", async () => {
+    const { researcherControlToolDefs } = await import("../agent/lib/control-tools.mjs");
+    const plan = (o) => researcherControlToolDefs(o).find((d) => d.name === "submit_plan");
+    assert.ok(plan().parameters.properties.execution);
+    assert.equal(plan({ canSpawnSubagents: false }).parameters.properties.execution, undefined);
+  });
+
+  it("reminds the researcher to delegate at decision points", async () => {
+    const t = setup({ delegation: "encouraged" });
+    await t.next("researcher");
+    t.send("researcher", "proposal", { goalId: "G1", payload: { execution: "subagent" } });
+    t.send("advisor", "plan_approved", { goalId: "G1" });
+    let [msg] = await t.next("researcher");
+    assert.match(msg.text, /execution: "subagent"\. Delegate it now with propose_subagent \(goalId G1\)/);
+
+    t.send("researcher", "result", { goalId: "G1" });
+    t.send("advisor", "result_accepted", { goalId: "G1" });
+    [msg] = await t.next("researcher");
+    assert.match(msg.text, /you are the supervisor/);
+
+    // A self-executed plan gets no delegation nudge on approval.
+    t.send("researcher", "proposal", { goalId: "G2", payload: { execution: "self" } });
+    t.send("advisor", "plan_approved", { goalId: "G2" });
+    [msg] = await t.next("researcher");
+    assert.doesNotMatch(msg.text, /\[orchestrator\]/);
+  });
+
+  it("does not nudge when subagents are disabled", async () => {
+    const t = setup({ maxSubagentDepth: 0 });
+    await t.next("researcher");
+    t.send("researcher", "proposal", { goalId: "G1", payload: { execution: "subagent" } });
+    t.send("advisor", "plan_approved", { goalId: "G1" });
+    t.send("researcher", "result", { goalId: "G1" });
+    t.send("advisor", "result_accepted", { goalId: "G1" });
+    const msgs = await t.next("researcher");
+    assert.ok(msgs.every((m) => !/\[orchestrator\]/.test(m.text)));
+  });
+});

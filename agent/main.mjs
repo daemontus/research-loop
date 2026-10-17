@@ -22,7 +22,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { AgentSession } from "./lib/agent-runner.mjs";
+import { AgentSession, backoffDelay, formatWait } from "./lib/agent-runner.mjs";
 import { clientSessionId } from "./lib/client-identity.mjs";
 import { createBrokerClient } from "./lib/broker-client.mjs";
 import { createPartialStreamer } from "./lib/partial-stream.mjs";
@@ -155,6 +155,53 @@ async function main() {
     token: job.token,
   });
 
+  // Set once the session is over (done/abort/signal); stops all loops.
+  let done = false;
+
+  // How long to ride out an outage (LLM provider or control plane) before
+  // giving up; the orchestrator passes --provider-retry-budget.
+  const retryBudgetMs = Number.isFinite(job.retryBudgetMs) ? job.retryBudgetMs : 8 * 3600e3;
+
+  /**
+   * Call the control plane, retrying network failures (host asleep, offline,
+   * restarting) with exponential backoff (3 s doubling, at most 1 min apart)
+   * until `retryBudgetMs` is spent. Authentication/routing errors are not
+   * retried. Returns undefined if the process is shutting down meanwhile.
+   */
+  async function controlPlane(label, fn) {
+    let since = 0;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        const result = await fn();
+        if (since) {
+          transcript.write("system", {
+            content: `control plane reachable again (${label}) after ${formatWait(Date.now() - since)}`,
+          });
+        }
+        return result;
+      } catch (e) {
+        const message = e?.message || String(e);
+        if (/-> (400|401|403|404):/.test(message)) throw e;
+        if (!since) since = Date.now();
+        const elapsed = Date.now() - since;
+        if (elapsed > retryBudgetMs) {
+          throw new Error(`control plane unreachable for ${formatWait(elapsed)} (${label}): ${message}`);
+        }
+        const delay = backoffDelay(attempt, { baseMs: 3000, maxDelayMs: 60000 });
+        // Log the first failures, then sparsely (a long outage is ~500 polls).
+        if (attempt < 5 || attempt % 30 === 0) {
+          transcript.write("system", {
+            content:
+              `control plane ${label} failed (attempt ${attempt + 1}, down ${formatWait(elapsed)}): ` +
+              `${message}; retrying in ${formatWait(delay)}`,
+          });
+        }
+        await new Promise((r) => setTimeout(r, delay));
+        if (done) return undefined;
+      }
+    }
+  }
+
   /**
    * One conversation (AgentSession) per agent: the root session plus any
    * subagent the control plane routes to this process. Created lazily on the
@@ -188,8 +235,17 @@ async function main() {
             subagent,
             canSpawnSubagents,
             maxSubagentDepth,
+            delegation: job.delegation || "optional",
           })
-        : buildAdvisorPrompt({ sandbox, configDir, supportsImage, task: job.task || "", subagent });
+        : buildAdvisorPrompt({
+            sandbox,
+            configDir,
+            supportsImage,
+            task: job.task || "",
+            subagent,
+            delegation: job.delegation || "optional",
+            subagentsEnabled: maxSubagentDepth == null || depth + 1 <= maxSubagentDepth,
+          });
 
     const controlState = { pendingHandoff: null };
     const controller = {
@@ -203,7 +259,7 @@ async function main() {
     const skillRoots = skillRootsFor(role, sandbox, extraRoots);
     const skillTools = role === "researcher" && !subagent ? [makeInstallSkillTool(sandbox)] : [];
     let controlDefs =
-      role === "researcher" ? researcherControlToolDefs() : advisorControlToolDefs();
+      role === "researcher" ? researcherControlToolDefs({ canSpawnSubagents }) : advisorControlToolDefs();
     if (subagent) controlDefs = controlDefs.filter((d) => !SKILLS_CONTROL_TOOLS.has(d.name));
     if (!canSpawnSubagents) controlDefs = controlDefs.filter((d) => d.name !== "propose_subagent");
     const tools = [...genericTools, ...skillTools, ...bindControlTools(controlDefs, controller)];
@@ -222,6 +278,7 @@ async function main() {
       maxTurnsPerPhase: job.maxTurnsPerPhase ?? 1000,
       abortTimeoutMs: job.abortTimeoutMs ?? 0,
       phaseTimeoutMs: job.phaseTimeoutMs ?? 0,
+      retryBudgetMs,
       // Each agent is its own provider-side session; the root keeps the
       // historical id so resumed runs stay stable.
       clientSessionId: clientSessionId(job.sessionId || "", subagent ? `${role}:${agentId}` : role),
@@ -255,12 +312,11 @@ async function main() {
   const rootCtx = createContext(ROOT_AGENT_ID, null);
   log(`started role=${role} model=${job.model} sandbox=${sandbox} transcript=${rootTranscriptPath}`);
 
-  await broker.register();
+  await controlPlane("register", () => broker.register());
   await broker.event("registered", { role, model: job.model });
   log(`registered with broker at ${job.brokerUrl}`);
 
   let cursor = 0;
-  let done = false;
 
 
   const sendHandoff = async (ctx, handoff) => {
@@ -271,14 +327,17 @@ async function main() {
       text: handoff.text,
       payload: handoff.payload,
     });
-    const res = await broker.send({ ...handoff, agentId: ctx.agentId });
+    // A retry after a lost response is safe: if the first copy was accepted,
+    // the duplicate is refused as out of turn and we simply wait.
+    const res = await controlPlane("send", () => broker.send({ ...handoff, agentId: ctx.agentId }));
     if (res && res.ok === false) {
-      // The broker rejected the handoff and queued a correction prompt for us;
-      // keep the session alive so the next loop iteration can act on it.
+      // The broker rejected the handoff and, unless it was simply not our turn
+      // (`wait`), queued a correction prompt; keep the session alive either way.
       ctx.transcript.write("system", {
         content:
           `handoff rejected by broker: ${res.error || "invalid"} ` +
-          `(state=${res.state || "?"}); awaiting correction prompt`,
+          `(state=${res.state || "?"}); ` +
+          (res.wait ? "not this agent's turn, waiting for the next message" : "awaiting correction prompt"),
       });
       log(`handoff rejected: ${res.error || "invalid"} (state=${res.state || "?"})`);
     }
@@ -345,68 +404,125 @@ async function main() {
   process.on("SIGTERM", () => onSignal("SIGTERM"));
   process.on("SIGINT", () => onSignal("SIGINT"));
 
-  const maxPollFailures = Math.max(1, Number(job.maxPollFailures) || 20);
-  let pollFailures = 0;
 
-  try {
+  // Inbox handling runs concurrently with the work loop, so messages that
+  // arrive while a phase is running are seen immediately:
+  //   - human notes are injected into the running conversation (steering)
+  //     and never start a phase of their own (a note that sat in the queue
+  //     until after the phase ended used to run a whole extra phase out of
+  //     turn, desynchronizing the researcher and advisor);
+  //   - abort / session_done stop the process at once;
+  //   - everything else (handoffs, prompts) is queued for the work loop.
+  const work = [];
+  let wake = null;
+  let pollError = null;
+  const notify = () => {
+    const w = wake;
+    wake = null;
+    w?.();
+  };
+
+  const steerHumanNote = (envelope) => {
+    const ctx = contextFor(envelope);
+    ctx.transcript.write("handoff", {
+      direction: "in",
+      from: envelope.role,
+      handoffKind: envelope.kind,
+      goalId: envelope.goalId ?? null,
+      text: envelope.text || "",
+      payload: envelope.payload || {},
+    });
+    ctx.session.steer(
+      [
+        "[message from the human, delivered while you work]",
+        envelope.text || "",
+        "",
+        "Take it into account and carry on with your current phase (it does not change whose turn it is).",
+      ].join("\n"),
+    );
+    ctx.transcript.write("system", {
+      content: ctx.session.isRunning()
+        ? "human note queued; it is injected after the current model turn"
+        : "human note queued for the start of this agent's next phase",
+    });
+  };
+
+  const pollLoop = async () => {
     while (!done) {
-      let batch;
-      try {
-        batch = await broker.poll(cursor);
-        pollFailures = 0;
-      } catch (e) {
-        pollFailures += 1;
-        transcript.write("system", {
-          content: `broker poll failed (${pollFailures}/${maxPollFailures}): ${e?.message || e}`,
-        });
-        if (pollFailures >= maxPollFailures) {
-          throw new Error(
-            `broker unreachable after ${pollFailures} attempts: ${e?.message || e}`,
-          );
-        }
-        await new Promise((r) => setTimeout(r, 3000));
-        continue;
-      }
+      const batch = await controlPlane("poll", () => broker.poll(cursor));
+      if (!batch) break; // shutting down
       cursor = batch.cursor ?? cursor;
       for (const envelope of batch.messages || []) {
-        if (envelope.role === "control") {
-          if (envelope.kind === "session_done") {
-            transcript.write("system", { content: "session_done received; exiting" });
-            done = true;
-            break;
-          }
-          if (envelope.kind === "abort") {
-            transcript.write("system", { content: `abort received: ${envelope.text || ""}` });
-            for (const ctx of contexts.values()) ctx.session.abort();
-            done = true;
-            break;
-          }
-          if (envelope.kind === "agent_done") {
-            closeContext(envelope.agentId);
-            continue;
-          }
-          if (envelope.kind === "start" || envelope.kind === "prompt") {
-            const ctx = contextFor(envelope);
-            ctx.transcript.write("system", { content: `${envelope.kind} received` });
-            await runPhase(ctx, envelope.text || "");
-            continue;
-          }
+        if (envelope.role === "control" && envelope.kind === "session_done") {
+          transcript.write("system", { content: "session_done received; exiting" });
+          done = true;
+          break;
         }
+        if (envelope.role === "control" && envelope.kind === "abort") {
+          transcript.write("system", { content: `abort received: ${envelope.text || ""}` });
+          done = true;
+          for (const ctx of contexts.values()) ctx.session.abort();
+          break;
+        }
+        if (envelope.role === "human" && envelope.kind === "human_message") {
+          steerHumanNote(envelope);
+          continue;
+        }
+        work.push(envelope);
+      }
+      notify();
+    }
+    notify();
+  };
 
+  const handle = async (envelope) => {
+    if (envelope.role === "control") {
+      if (envelope.kind === "agent_done") {
+        closeContext(envelope.agentId);
+        return;
+      }
+      if (envelope.kind === "start" || envelope.kind === "prompt") {
         const ctx = contextFor(envelope);
-        const prompt = renderInbound(envelope, {
-          goalsSnapshot: readGoalsSnapshot(ctx.goalsPath),
-          skillsSnapshot: renderInstalledSkills(scanSkills(ctx.skillRoots)),
+        ctx.transcript.write("system", { content: `${envelope.kind} received` });
+        await runPhase(ctx, envelope.text || "");
+        return;
+      }
+    }
+    const ctx = contextFor(envelope);
+    const prompt = renderInbound(envelope, {
+      goalsSnapshot: readGoalsSnapshot(ctx.goalsPath),
+      skillsSnapshot: renderInstalledSkills(scanSkills(ctx.skillRoots)),
+    });
+    ctx.transcript.write("handoff", {
+      direction: "in",
+      from: envelope.role,
+      handoffKind: envelope.kind,
+      goalId: envelope.goalId ?? null,
+      text: envelope.text || "",
+      payload: envelope.payload || {},
+    });
+    await runPhase(ctx, prompt);
+  };
+
+  try {
+    pollLoop().catch((e) => {
+      pollError = e;
+      notify();
+    });
+    while (!done) {
+      if (pollError) throw pollError;
+      if (!work.length) {
+        await new Promise((r) => {
+          wake = r;
         });
-        ctx.transcript.write("handoff", {
-          direction: "in",
-          from: envelope.role,
-          handoffKind: envelope.kind,
-          goalId: envelope.goalId ?? null,
-          text: envelope.text || "",
-          payload: envelope.payload || {},
-        });
-        await runPhase(ctx, prompt);
+        continue;
+      }
+      try {
+        await handle(work.shift());
+      } catch (e) {
+        // A phase interrupted by abort/session_done is not a failure.
+        if (done) break;
+        throw e;
       }
     }
   } catch (e) {
@@ -425,6 +541,8 @@ async function main() {
   await broker.event("exiting", stats);
   for (const ctx of contexts.values()) ctx.transcript.close();
   transcript.close();
+  // The inbox long-poll may still be pending; nothing is left to do.
+  process.exit(0);
 }
 
 main().catch((e) => {

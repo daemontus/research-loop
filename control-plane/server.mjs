@@ -197,9 +197,11 @@ export function startControlPlane(opts) {
     initialAgents: opts.initialAgents || null,
     initialActiveId: opts.initialActiveId || null,
     initialRootPendingProposal: opts.initialRootPendingProposal || null,
+    initialRootLastPlanExecution: opts.initialRootLastPlanExecution || null,
     researcherSandbox: opts.researcherSandbox || (opts.goalsPath ? path.dirname(opts.goalsPath) : null),
     agentsDir: opts.agentsDir || null,
     maxSubagentDepth: opts.maxSubagentDepth ?? null,
+    delegation: opts.delegation || "optional",
   });
   const researcherSandbox =
     opts.researcherSandbox || (opts.goalsPath ? path.dirname(opts.goalsPath) : null);

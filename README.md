@@ -93,6 +93,24 @@ new collaborator (`title`, `instructions`, `rationale`, optional `goalId` and
 adding `conditions` that are appended to the instructions) or rejects it with
 feedback (`reject_subagent`), after which the researcher revises or carries on.
 
+Delegation is part of planning: when subagents are available, every
+`submit_plan` records who executes the goal (`execution: "self" | "subagent"`
+plus a short `executionRationale`), and the advisor reviews that choice like
+the rest of the plan. After a `subagent` plan is approved, the researcher
+proposes the subagent for that goal, and when the report comes back it
+integrates the outcome and submits the goal's result as usual. Because the
+system prompt is far back in a long context, the control plane also appends a
+one-line reminder to the researcher's prompt at decision points (a `subagent`
+plan was approved; a goal was accepted, a subagent reported back, or completion
+was sent back), as long as it may still delegate.
+
+`--delegation encouraged` turns on **supervisor mode** for the main session:
+its researcher is told to plan, delegate, integrate and verify, delegating
+every substantial self-contained goal by default, and its advisor requests plan
+changes when such a goal is planned as `self` without a good reason. The
+default (`optional`) still asks for the per-goal decision but leaves it to
+judgment. Subagents are never put in supervisor mode.
+
 An approved subagent is a fresh researcher/advisor pair that follows the same
 plan/result review loop as the main session, with its own context and its own
 provider session id. It skips the skills phase and human sign-off: when its
@@ -307,6 +325,7 @@ per task (and can even update the bundled Rust/uv at runtime).
 | `--auto-approve` | off | auto-approve final completion (for testing) |
 | `--skip-skills` | off | skip the skills-discovery phase and start planning immediately |
 | `--max-subagent-depth` | unlimited | maximum subagent nesting depth (`0` disables subagents) |
+| `--delegation` | `optional` | `encouraged` = supervisor mode: the main researcher delegates substantial self-contained goals by default |
 | `--no-open` | off | do not open the WebUI in a browser (URL is still printed) |
 | `--no-model-discovery` | off | skip querying the provider's `/models` for context/output limits |
 | `--researcher-context-window` / `--advisor-context-window` | discovered/config | override a model's context window |
@@ -316,6 +335,7 @@ per task (and can even update the bundled Rust/uv at runtime).
 | `--max-turns-per-phase` | 1000 | agent turns allowed per phase (`0` = unlimited) |
 | `--abort-timeout-ms` | 0 | per-attempt window before an in-flight turn is aborted and retried (`0` = disabled) |
 | `--phase-timeout-ms` | 0 | hard per-phase wall clock (`0` = disabled) |
+| `--provider-retry-budget` | `8h` | how long to keep retrying one provider/control-plane outage with exponential backoff (`0` = no retries) |
 | `--thinking` | medium | reasoning effort |
 | `--host` | `127.0.0.1` | control-plane/WebUI bind address (`0.0.0.0` for all interfaces) |
 | `--port` | 0 | control-plane port (0 = random) |
@@ -594,11 +614,21 @@ and no agents, until you interrupt it.
 
 Long sessions are protected against the common derail modes:
 
-- **Provider retries**: `streamSimple` is called with `maxRetries` (default 4)
-  and `maxRetryDelayMs` (60s), so transient 5xx/408/network errors are retried by
-  pi-ai instead of aborting the run.
-- **Turn-level recovery**: aborted turns, HTTP 429, and context-overflow `400`s
-  trim to the last consistent point, compact, and continue (bounded per phase).
+- **Provider outages are waited out.** Transient failures (5xx, dropped
+  connections, gateway errors, HTTP 429) trim the failed turn to the last
+  consistent point and retry with exponential backoff: 5 s doubling (30 s for
+  429, or the provider's `retry-after`), at most 15 min apart, ±20% jitter. Retries
+  continue until one outage has lasted `--provider-retry-budget` (default `8h`,
+  about 40 attempts; `0` disables), and the budget restarts after any successful
+  model turn. pi-ai's own quick retries (`maxRetries`, default 2) run inside each
+  attempt. Each wait is noted in the transcript, and the WebUI header shows
+  "provider down · retry in …" for that agent.
+- **Context overflow vs. outage**: a "request too large" rejection (including
+  gateway wordings such as OpenCode's "too large for the model's configured
+  input limit") is first treated as a context overflow: history is compacted
+  and the turn retried. If the much smaller request is rejected the same way, it
+  was the provider failing, so it is retried with the backoff above instead of
+  compacting again.
 - **Compaction reclaims file bodies**: older tool-call arguments (e.g.
   `write_file` content) are truncated, in addition to stripping tool output and
   stale reasoning.
@@ -621,16 +651,26 @@ Long sessions are protected against the common derail modes:
   aborted and retried from the last consistent point with a fresh window; aborts
   are recognised whether the provider reports `stopReason: "aborted"` or an
   `"error"` whose message is an abort (e.g. "This operation was aborted").
-- **Bounded broker polling**: if the control plane disappears, an agent exits
-  after N failed polls instead of spinning forever.
+- **Control-plane outages are waited out too**: if an agent cannot reach the
+  control plane (host asleep, offline, restarting), polls, handoffs and
+  registration are retried with backoff (3 s doubling, at most 1 min apart) for
+  the same retry budget, then the agent exits. A handoff resent after a lost
+  response is harmless: the duplicate is refused as out of turn.
 - **Clean termination**: SIGTERM/SIGINT aborts and exits, so containers/processes
   are not orphaned.
 - **Exactly one control tool per turn**: a second call is refused; the first
   handoff stands.
 - **Illegal handoffs recover**: the broker rejects, queues a state-aware
   correction prompt, and the agent continues (it never crashes on the rejection).
-- **Human notes are deferred** to the role expected to act and merged into its
-  next handoff, so injecting a note cannot make an agent act out of turn.
+- **Human notes never start a phase.** A note for the role that is currently
+  working is injected into its running conversation after the current model
+  turn (agents poll their inbox concurrently with the work); a note for any
+  other role or agent is held and merged into its next handoff. Either way a
+  note cannot make an agent act out of turn.
+- **Out-of-turn handoffs are refused quietly**: if an agent hands off when it
+  is not its turn, the broker discards it without sending a correction prompt
+  (which would only start another out-of-turn phase), and the agent waits for
+  its next message. Such refusals do not count toward the rejection cap.
 - **`--max-handoffs`** counts researcher goal steps, not every message.
 
 ## Notes & limitations

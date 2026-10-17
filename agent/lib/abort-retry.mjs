@@ -55,7 +55,16 @@ export function isContextOverflowError(error) {
     /exceeds the context/i.test(text) ||
     /prompt \(\d+\s*tokens\).*exceeds/i.test(text) ||
     /smaller max[\s_-]?tokens/i.test(text) ||
-    /never (be )?truncated/i.test(text)
+    /never (be )?truncated/i.test(text) ||
+    // OpenCode Go and similar gateways:
+    //   [unsupported_request] This text request is too large for the model's
+    //   configured input limit.
+    /too large for the model/i.test(text) ||
+    /input limit/i.test(text) ||
+    /request (is )?too large/i.test(text) ||
+    /prompt is too long/i.test(text) ||
+    /context[_ ]length[_ ]exceeded/i.test(text) ||
+    /exceeds? (the )?(model'?s )?context window/i.test(text)
   );
 }
 

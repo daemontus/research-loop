@@ -31,7 +31,7 @@ describe("provider retry policy injection", () => {
     const { session, calls } = makeSession();
     const agent = session.makeAgent();
     agent.streamFunction({ id: "m" }, {}, undefined);
-    assert.equal(calls[0].maxRetries, 4);
+    assert.equal(calls[0].maxRetries, 2);
     assert.equal(calls[0].maxRetryDelayMs, 60000);
   });
 

@@ -279,6 +279,16 @@ describe("transient provider errors", () => {
     assert.equal(isTransientProviderError(vllm), false);
   });
 
+  it("classifies OpenCode Go's input-limit rejection as context overflow", () => {
+    const opencode =
+      '400: {"type":"server_error","message":"Upstream request failed: [unsupported_request] ' +
+      "This text request is too large for the model's configured input limit.\"}";
+    assert.equal(isContextOverflowError(opencode), true);
+    assert.equal(isTransientProviderError(opencode), false);
+    assert.equal(isContextOverflowError("context_length_exceeded"), true);
+    assert.equal(isContextOverflowError("prompt is too long: 210000 tokens > 200000 maximum"), true);
+  });
+
   it("treats a trailing terminated assistant as a retryable partial turn", () => {    const dropped = assistant({ stopReason: "error", errorMessage: "terminated" });
     assert.equal(isTransientProviderAssistant(dropped), true);
     assert.equal(isPartialAssistantTurn(dropped), true);

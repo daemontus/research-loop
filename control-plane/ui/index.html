@@ -3,25 +3,46 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>research-loop transcript</title>
-    <!-- Two arrows chasing each other: researcher (blue) and advisor (orange). -->
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23161b22'/%3E%3Cpath d='M8.5 16a7.5 7.5 0 0 1 12.6-5.5' fill='none' stroke='%234f9cf9' stroke-width='3.2' stroke-linecap='round'/%3E%3Cpath d='M19.4 6.6l5.3 2.2-3.3 4.7z' fill='%234f9cf9'/%3E%3Cpath d='M23.5 16a7.5 7.5 0 0 1-12.6 5.5' fill='none' stroke='%23f5a623' stroke-width='3.2' stroke-linecap='round'/%3E%3Cpath d='M12.6 25.4l-5.3-2.2 3.3-4.7z' fill='%23f5a623'/%3E%3C/svg%3E" />
+    <title>Pat & Mat Software Factory</title>
+    <!-- Pat's cap and Mat's striped bobble hat. -->
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3CclipPath id='fc'%3E%3Crect x='1' y='1' width='30' height='30' rx='8'/%3E%3C/clipPath%3E%3C/defs%3E%3Cg clip-path='url(%23fc)'%3E%3Crect width='32' height='32' fill='%23ffcc1f'/%3E%3Crect x='16' width='16' height='32' fill='%23e8402f'/%3E%3C/g%3E%3Crect x='1' y='1' width='30' height='30' rx='8' fill='none' stroke='%231d2340' stroke-width='2'/%3E%3Cg transform='translate(0.5 8) scale(.68)'%3E%3Crect x='10.8' y='4' width='2.4' height='6' rx='1.2' fill='%232b3346' stroke='%231d2340' stroke-width='1.3'/%3E%3Cpath d='M3 18C3 11.5 7 8.5 12 8.5s9 3 9 9.5z' fill='%234a5775' stroke='%231d2340' stroke-width='1.6' stroke-linejoin='round'/%3E%3Cpath d='M6.8 13c1-1.5 2.6-2.4 4.4-2.7' fill='none' stroke='%238a97b3' stroke-width='1.3' stroke-linecap='round'/%3E%3Crect x='2' y='16.4' width='20' height='4.8' rx='2.4' fill='%2334405b' stroke='%231d2340' stroke-width='1.6'/%3E%3C/g%3E%3Cg transform='translate(14.5 5) scale(.72)'%3E%3Cdefs%3E%3Cpattern id='ms' width='24' height='3.4' patternUnits='userSpaceOnUse'%3E%3Crect width='24' height='3.4' fill='%23f6f9ff'/%3E%3Crect width='24' height='1.7' fill='%236f9fd8'/%3E%3C/pattern%3E%3C/defs%3E%3Cpath d='M5.4 19C5.6 13 6.4 9 8.4 6.9c1.9-2 5.3-2 7.2 0 2 2.1 2.8 6.1 3 12.1z' fill='url(%23ms)' stroke='%231d2340' stroke-width='1.6' stroke-linejoin='round'/%3E%3Crect x='4' y='17.2' width='16' height='4.8' rx='2.2' fill='%235b8ccc' stroke='%231d2340' stroke-width='1.6'/%3E%3Ccircle cx='12' cy='4.3' r='2.9' fill='%23fff' stroke='%231d2340' stroke-width='1.6'/%3E%3C/g%3E%3C/svg%3E" />
     <style>
+      /* Pat & Mat Software Factory: Pat (yellow sweater, dark cap) is the
+         researcher, Mat (red sweater, striped bobble hat) is the advisor. */
       :root {
-        --bg: #0e1116;
-        --panel: #161b22;
-        --panel2: #1c2230;
-        --border: #2a3140;
-        --text: #d7dce4;
-        --muted: #8b95a7;
-        --researcher: #4f9cf9;
-        --advisor: #f5a623;
-        --human: #a06cf7;
-        --control: #6b7280;
-        --ok: #3fb950;
-        --warn: #d29922;
-        --err: #f85149;
+        --ink: #1d2340;
+        --bg: #4a90e2;
+        --sky: #dcebff;
+        --sky-line: #c6dcfa;
+        --panel: #fffaf0;
+        --panel2: #fff1cf;
+        --border: #1d2340;
+        --soft-border: #d9cfb6;
+        --text: #1d2340;
+        --muted: #6a6f85;
+        --denim: #2f5d9b;
+        --denim-dark: #213f6b;
+        --researcher: #ffcc1f;
+        --researcher-ink: #8a6200;
+        --researcher-soft: #fff6c9;
+        --advisor: #e8402f;
+        --advisor-ink: #c0281b;
+        --advisor-soft: #ffe4de;
+        --human: #8e5cf0;
+        --human-ink: #6a3dd6;
+        --human-soft: #f0e8ff;
+        --control: #7a8296;
+        --control-soft: #eef0f5;
+        --ok: #2e9e4f;
+        --warn: #e08a00;
+        --err: #d93025;
+        --pop: 3px 3px 0 var(--ink);
+        --head-h: 46px;
+        --pop-sm: 2px 2px 0 var(--ink);
         --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        --toon: ui-rounded, "SF Pro Rounded", "Arial Rounded MT Bold", "Nunito", "Varela Round", "Trebuchet MS", sans-serif;
+        --hat-pat: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='10.8' y='4' width='2.4' height='6' rx='1.2' fill='%232b3346' stroke='%231d2340' stroke-width='1.3'/%3E%3Cpath d='M3 18C3 11.5 7 8.5 12 8.5s9 3 9 9.5z' fill='%234a5775' stroke='%231d2340' stroke-width='1.6' stroke-linejoin='round'/%3E%3Cpath d='M6.8 13c1-1.5 2.6-2.4 4.4-2.7' fill='none' stroke='%238a97b3' stroke-width='1.3' stroke-linecap='round'/%3E%3Crect x='2' y='16.4' width='20' height='4.8' rx='2.4' fill='%2334405b' stroke='%231d2340' stroke-width='1.6'/%3E%3C/svg%3E");
+        --hat-mat: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cdefs%3E%3Cpattern id='ms' width='24' height='3.4' patternUnits='userSpaceOnUse'%3E%3Crect width='24' height='3.4' fill='%23f6f9ff'/%3E%3Crect width='24' height='1.7' fill='%236f9fd8'/%3E%3C/pattern%3E%3C/defs%3E%3Cpath d='M5.4 19C5.6 13 6.4 9 8.4 6.9c1.9-2 5.3-2 7.2 0 2 2.1 2.8 6.1 3 12.1z' fill='url(%23ms)' stroke='%231d2340' stroke-width='1.6' stroke-linejoin='round'/%3E%3Crect x='4' y='17.2' width='16' height='4.8' rx='2.2' fill='%235b8ccc' stroke='%231d2340' stroke-width='1.6'/%3E%3Ccircle cx='12' cy='4.3' r='2.9' fill='%23fff' stroke='%231d2340' stroke-width='1.6'/%3E%3C/svg%3E");
       }
       * { box-sizing: border-box; }
       body {
@@ -33,137 +54,201 @@
         flex-direction: column;
         height: 100vh;
       }
+      /* Header: a strip of denim (their jeans), with orange stitching. */
       header {
         display: flex;
         align-items: center;
         gap: 6px 14px;
-        padding: 8px 14px;
-        background: var(--panel);
-        border-bottom: 1px solid var(--border);
-        flex-wrap: wrap;
+        padding: 8px 14px 10px;
+        background:
+          repeating-linear-gradient(135deg, rgba(255,255,255,.05) 0 2px, transparent 2px 5px),
+          linear-gradient(var(--denim), var(--denim-dark));
+        color: #fff;
+        border-bottom: 3px solid var(--ink);
+        flex-wrap: nowrap;
+        position: relative;
       }
-      header h1 { font-size: 15px; margin: 0; font-weight: 600; }
-      .brand { display: inline-flex; align-items: center; gap: 7px; min-width: 0; }
+      header::after {
+        content: ""; position: absolute; left: 6px; right: 6px; bottom: 3px;
+        border-bottom: 2px dashed #f5a742; pointer-events: none;
+      }
+      .brand { display: inline-flex; align-items: center; gap: 9px; min-width: 0; flex: 0 1 auto; }
+      #brand-icon, header h1, #state { flex: none; }
+      #brand-icon { filter: drop-shadow(2px 2px 0 var(--ink)); transform: rotate(-6deg); transition: transform .2s; }
+      .brand:hover #brand-icon { transform: rotate(6deg) scale(1.08); }
+      header h1 {
+        margin: 0; font: 900 20px/1 var(--toon); letter-spacing: .01em; white-space: nowrap;
+        color: #fff; text-shadow: 2px 2px 0 var(--ink);
+        display: inline-flex; align-items: baseline; gap: 6px;
+      }
+      header h1 .pat { color: var(--researcher); }
+      header h1 .mat { color: #ff6a55; }
+      header h1 .amp { color: #fff; font-size: 16px; }
+      header h1 small {
+        font: 800 10px/1 var(--toon); text-transform: uppercase; letter-spacing: .14em; text-shadow: none;
+        background: #fff; color: var(--ink); border: 2px solid var(--ink); border-radius: 6px;
+        padding: 3px 6px 2px; transform: rotate(-3deg); box-shadow: var(--pop-sm); align-self: center;
+      }
       #run-label {
-        color: var(--muted); font-size: 13px; max-width: 28ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        color: #d6e6ff; font-size: 13px; max-width: 28ch; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      /* Run stats: a ticker that slides back and forth when it does not fit. */
+      .ticker { flex: 1 1 0; min-width: 60px; overflow: hidden; }
+      .ticker-track { display: inline-flex; align-items: center; gap: 14px; padding: 2px 0; white-space: nowrap; }
+      .ticker.scrolling {
+        -webkit-mask-image: linear-gradient(90deg, transparent, #000 12px, #000 calc(100% - 12px), transparent);
+        mask-image: linear-gradient(90deg, transparent, #000 12px, #000 calc(100% - 12px), transparent);
+      }
+      .ticker.scrolling .ticker-track { animation: ticker var(--ticker-dur, 10s) ease-in-out infinite; }
+      .ticker.scrolling:hover .ticker-track { animation-play-state: paused; }
+      @keyframes ticker {
+        0%, 15% { transform: translateX(12px); }
+        45%, 60% { transform: translateX(calc(-1 * var(--ticker-shift, 0px))); }
+        90%, 100% { transform: translateX(12px); }
       }
       #run-label:not(:empty)::before { content: "/ "; }
-      .header-tools { display: inline-flex; align-items: center; gap: 10px; margin-left: auto; flex-wrap: wrap; }
-      .agent-live { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
-      .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--control); display: inline-block; flex: none; }
-      .dot.active { background: var(--ok); box-shadow: 0 0 0 3px rgba(63,185,80,.18); }
-      .dot.idle { background: var(--warn); }
-      .chip {
-        display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 999px;
-        border: 1px solid var(--border); font-size: 11px; color: var(--muted); cursor: pointer; user-select: none;
+      .header-tools { display: inline-flex; align-items: center; gap: 10px; margin-left: auto; flex: none; }
+      .agent-live {
+        display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
+        background: rgba(255,255,255,.12); border-radius: 999px; padding: 1px 9px 1px 4px;
       }
+      .agent-live .hat { width: 18px; height: 18px; }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--control); display: inline-block; flex: none; border: 1.5px solid var(--ink); }
+      .dot.active { background: #4ade80; box-shadow: 0 0 0 3px rgba(74,222,128,.3); }
+      .dot.idle { background: #ffb020; }
+      .hat { display: inline-block; flex: none; width: 16px; height: 16px; background: center / contain no-repeat; vertical-align: -3px; }
+      .hat.pat { background-image: var(--hat-pat); }
+      .hat.mat { background-image: var(--hat-mat); }
+      .chip {
+        display: inline-flex; align-items: center; gap: 5px; padding: 2px 10px 2px 6px; border-radius: 999px;
+        border: 2px solid var(--ink); font: 700 12px var(--toon); color: var(--ink); cursor: pointer; user-select: none;
+        background: #fff; box-shadow: var(--pop-sm); transition: transform .1s, box-shadow .1s;
+      }
+      .chip:active { transform: translate(2px, 2px); box-shadow: none; }
       .chip input { display: none; }
-      .chip::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
-      .chip.researcher::before { background: var(--researcher); }
-      .chip.advisor::before { background: var(--advisor); }
+      .chip::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: currentColor; border: 1.5px solid var(--ink); }
+      .chip.researcher::before, .chip.advisor::before {
+        width: 16px; height: 16px; border: none; border-radius: 0; background: var(--hat-pat) center / contain no-repeat;
+      }
+      .chip.advisor::before { background-image: var(--hat-mat); }
       .chip.human::before { background: var(--human); }
       .chip.control::before { background: var(--control); }
-      .chip:has(input:checked) { color: var(--text); background: var(--panel2); }
-      .chip:not(:has(input:checked)) { opacity: .55; text-decoration: line-through; }
-      .icon-btn { display: inline-flex; align-items: center; justify-content: center; padding: 4px 6px; color: var(--muted); }
+      .chip.researcher:has(input:checked) { background: var(--researcher); }
+      .chip.advisor:has(input:checked) { background: var(--advisor); color: #fff; }
+      .chip.human:has(input:checked) { background: var(--human-soft); }
+      .chip.control:has(input:checked) { background: var(--control-soft); }
+      .chip:not(:has(input:checked)) { opacity: .55; text-decoration: line-through; box-shadow: none; }
+      .icon-btn { display: inline-flex; align-items: center; justify-content: center; padding: 4px 6px; color: var(--ink); }
       .icon-btn[hidden] { display: none; }
-      .icon-btn[aria-pressed="true"] { color: #ffd479; border-color: #6b5200; background: #2a2200; }
-      .stat { font-size: 12px; color: var(--muted); }
-      .stat b { color: var(--text); font-weight: 600; }
+      .icon-btn[aria-pressed="true"] { background: var(--researcher); }
+      .stat { font-size: 12px; color: #d6e6ff; white-space: nowrap; }
+      .stat b { color: #fff; font-weight: 700; }
       .stat .tok-sub { color: var(--muted); font-size: 11px; }
       .live { transition: color .3s; }
-      .live.active { color: var(--ok); }
-      .live.idle { color: var(--warn); }
+      .live.active { color: #86efac; }
+      .live.idle { color: #ffd479; }
       .searchbox { display: inline-flex; align-items: center; gap: 6px; }
       .searchbox input {
-        background: var(--panel2); color: var(--text); border: 1px solid var(--border);
-        border-radius: 6px; padding: 4px 8px; font: inherit; font-size: 12px; width: 180px;
+        background: #fff; color: var(--text); border: 2px solid var(--ink);
+        border-radius: 999px; padding: 4px 12px; font: inherit; font-size: 12px; width: 180px;
       }
-      .searchbox input:focus { outline: none; border-color: #3d4757; }
-      #search-count { font-size: 11px; color: var(--muted); min-width: 2em; text-align: right; }
-      .entry.search-hit { outline: 1px solid #3d4757; }
+      .searchbox input:focus { outline: none; box-shadow: 0 0 0 3px var(--researcher); }
+      #search-count { font: 700 11px var(--toon); color: var(--muted); min-width: 2em; text-align: right; }
+      .entry.search-hit .bubble { box-shadow: 0 0 0 3px var(--researcher), var(--pop); }
       .entry.search-miss { opacity: .45; }
       .badge {
-        padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700;
-        text-transform: uppercase; letter-spacing: .04em;
+        padding: 3px 10px 2px; border-radius: 8px; font: 800 12px/1.4 var(--toon);
+        text-transform: uppercase; letter-spacing: .05em; box-shadow: var(--pop-sm); transform: rotate(-2deg);
       }
-      .state { background: var(--panel2); color: var(--text); border: 1px solid var(--border); }
-      .state.AWAITING_HUMAN { background: #3a2e00; color: #ffd479; border-color: #6b5200; }
-      .state.DONE { background: #10331b; color: #7ee2a8; border-color: #1c5a30; }
-      .state.ABORTED { background: #3a1414; color: #ff9a92; border-color: #6b1f1f; }
+      .state { background: #fff; color: var(--ink); border: 2px solid var(--ink); }
+      .state.AWAITING_HUMAN { background: var(--researcher); animation: wobble 1.6s ease-in-out infinite; }
+      .state.DONE { background: #5fd38a; text-transform: none; font-size: 14px; }
+      .state.ABORTED { background: var(--advisor); color: #fff; }
+      @keyframes wobble { 0%, 100% { transform: rotate(-3deg); } 50% { transform: rotate(3deg); } }
       /* Side panes shrink to their min-width before the page would overflow. */
       main { flex: 1; display: flex; min-height: 0; overflow: hidden; }
-      #timeline-wrap { flex: 1; position: relative; min-height: 0; min-width: 280px; display: flex; flex-direction: column; }
+      #timeline-wrap {
+        flex: 1; position: relative; min-height: 0; min-width: 280px; display: flex; flex-direction: column;
+        /* Workshop blueprint paper. */
+        background:
+          linear-gradient(var(--sky-line) 1px, transparent 1px) 0 0 / 24px 24px,
+          linear-gradient(90deg, var(--sky-line) 1px, transparent 1px) 0 0 / 24px 24px,
+          var(--sky);
+      }
       #timeline-tools {
         flex: none; display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap;
-        padding: 6px 12px; border-bottom: 1px solid var(--border); background: var(--panel);
+        min-height: var(--head-h); padding: 6px 12px; border-bottom: 3px solid var(--ink); background: var(--panel);
       }
       #timeline-tools .searchbox { flex: 1; min-width: 140px; }
       #timeline-tools .searchbox input { width: 100%; }
-      #timeline { flex: 1; min-height: 0; overflow-y: auto; padding: 16px; position: relative; }
+      #timeline { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 20px 18px 16px; position: relative; z-index: 0; }
       .latest {
-        position: absolute; bottom: 16px; right: 16px; display: inline-flex;
-        align-items: center; gap: 4px; padding: 6px 12px; border-radius: 999px;
-        background: #1f6feb; border: 1px solid #1f6feb; color: #fff; font-size: 12px;
-        cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,.4);
+        position: absolute; bottom: 16px; right: 20px; display: inline-flex;
+        align-items: center; gap: 4px; padding: 6px 14px; border-radius: 999px;
+        background: var(--researcher); border: 2px solid var(--ink); color: var(--ink); font: 800 13px var(--toon);
+        cursor: pointer; box-shadow: var(--pop); animation: bob 1.4s ease-in-out infinite; z-index: 2;
       }
+      .latest:hover { border-color: var(--ink); }
+      @keyframes bob { 50% { transform: translateY(-3px); } }
       .latest[hidden] { display: none !important; }
       aside {
-        width: 380px; border-right: 1px solid var(--border); background: var(--panel);
+        width: 380px; border-right: 3px solid var(--ink); background: var(--panel);
         display: flex; flex-direction: column; min-height: 0; flex: 0 1 auto; min-width: 240px;
       }
       #pane-scroll { flex: 1; overflow-y: auto; }
-      #task { padding: 12px 14px; border-bottom: 1px solid var(--border); font-size: 13px; line-height: 1.55; }
+      #task { padding: 12px 14px; border-bottom: 2px dashed var(--soft-border); font-size: 13px; line-height: 1.55; }
       #overview-wrap {
-        width: 300px; border-left: 1px solid var(--border); background: var(--panel);
+        width: 300px; border-left: 3px solid var(--ink); background: var(--panel);
         display: flex; flex-direction: column; min-height: 0; flex: 0 1 auto; min-width: 180px;
       }
       .divider {
-        flex: none; width: 5px; cursor: col-resize; background: transparent;
-        border-left: 1px solid var(--border); border-right: 1px solid var(--border);
+        flex: none; width: 6px; cursor: col-resize; background: var(--denim);
+        border-left: none; border-right: none;
       }
-      .divider:hover, .divider.dragging { background: #3d4757; }
+      .divider:hover, .divider.dragging { background: var(--researcher); }
       .divider.hidden { display: none; }
       .pane .side-head {
         display: flex; align-items: center; justify-content: space-between; gap: 8px;
-        padding: 10px 14px; border-bottom: 1px solid var(--border); font-weight: 600; flex: none;
+        min-height: var(--head-h); padding: 6px 14px; border-bottom: 3px solid var(--ink); flex: none;
+        font: 800 14px var(--toon); background: var(--panel2);
       }
+      .pane .side-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .pane .collapse-btn { flex: none; }
+      #agents-pane .side-head { background: var(--researcher-soft); }
+      #overview-wrap .side-head { background: var(--advisor-soft); }
       .collapse-btn {
-        border: none; background: none; color: var(--muted); padding: 0 4px; font-size: 15px; line-height: 20px;
+        border: 2px solid var(--ink); background: #fff; color: var(--ink); padding: 0 6px; font-size: 14px; line-height: 18px;
+        border-radius: 6px; box-shadow: var(--pop-sm);
       }
-      .collapse-btn:hover { color: var(--text); }
-      .pane.collapsed { width: 30px !important; min-width: 30px !important; flex: none; cursor: pointer; }
+      .collapse-btn:hover { background: var(--researcher); }
+      .pane.collapsed { width: 34px !important; min-width: 34px !important; flex: none; cursor: pointer; }
       .pane.collapsed > :not(.side-head) { display: none !important; }
       .pane.collapsed .side-head {
         flex-direction: column; justify-content: flex-start; height: 100%; padding: 8px 0; border-bottom: none;
       }
       .pane.collapsed .side-title { writing-mode: vertical-rl; font-size: 12px; color: var(--muted); }
       .pane.collapsed:hover .side-title { color: var(--text); }
-      #overview { flex: 1; overflow-y: auto; padding: 8px; }
+      #overview { flex: 1; overflow-y: auto; padding: 10px; }
       .ov-item {
-        display: block; width: 100%; text-align: left; margin: 0 0 4px; padding: 6px 8px;
-        background: var(--panel2); border: 1px solid var(--border); border-left-width: 3px;
-        border-radius: 6px; color: var(--text); cursor: pointer; font: inherit;
+        display: block; width: 100%; text-align: left; margin: 0 0 6px; padding: 5px 9px;
+        background: #fff; border: 2px solid var(--ink); border-left-width: 6px;
+        border-radius: 8px; color: var(--text); cursor: pointer; font: inherit; box-shadow: var(--pop-sm);
       }
-      .ov-item:hover { border-color: #3d4757; }
-      .ov-item.active { background: #202a3d; border-color: #3d4757; }
+      .ov-item:hover { transform: translate(-1px, -1px); box-shadow: var(--pop); }
+      .ov-item.active { background: var(--panel2); }
       .ov-item.researcher { border-left-color: var(--researcher); }
       .ov-item.advisor { border-left-color: var(--advisor); }
       .ov-item.human { border-left-color: var(--human); }
       .ov-item.control { border-left-color: var(--control); }
-      .ov-item .ov-top { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
-      .ov-item .ov-who { font-weight: 700; }
-      .ov-item .ov-who.researcher { color: var(--researcher); }
-      .ov-item .ov-who.advisor { color: var(--advisor); }
-      .ov-item .ov-who.human { color: var(--human); }
-      .ov-item .ov-who.control { color: var(--control); }
+      .ov-item .ov-top { display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--muted); }
+      .ov-item .ov-who { font: 800 12px var(--toon); }
       .ov-item .ov-label { display: block; font-size: 12px; margin-top: 2px; }
       .ov-item .ov-goal { color: var(--muted); }
-      .ov-section { margin-bottom: 6px; }
+      .ov-section { margin-bottom: 8px; }
       .ov-head {
         display: flex; align-items: center; gap: 6px; width: 100%; padding: 5px 4px; margin: 0 0 4px;
-        background: none; border: none; border-radius: 4px; color: var(--text); font-size: 12px; font-weight: 600;
-        text-align: left; cursor: pointer;
+        background: none; border: none; border-radius: 6px; color: var(--text); font: 800 13px var(--toon);
+        text-align: left; cursor: pointer; box-shadow: none;
       }
       .ov-head:hover { background: var(--panel2); border-color: transparent; }
       .ov-head .caret { color: var(--muted); font-size: 10px; transition: transform .15s; }
@@ -171,21 +256,26 @@
       .ov-section.collapsed .ov-items { display: none; }
       .ov-head .ov-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .ov-status {
-        flex: none; font-size: 10px; font-weight: 600; padding: 1px 7px; border-radius: 999px;
-        border: 1px solid var(--border); color: var(--muted); white-space: nowrap;
+        flex: none; font: 700 10px var(--toon); padding: 1px 8px; border-radius: 999px;
+        border: 1.5px solid var(--ink); color: var(--ink); background: #fff; white-space: nowrap;
       }
       .ov-status[hidden] { display: none; }
-      .ov-status.done { color: #7ee2a8; border-color: #1c5a30; background: #10331b; }
-      .ov-status.progress { color: #79c0ff; border-color: #1f4f8a; background: #0f2236; }
-      .ov-status.review { color: #ffd479; border-color: #6b5200; background: #2a2200; }
-      .ov-status.changes { color: #ff9a92; border-color: #6b1f1f; background: #2a1212; }
-      #ov-progress { color: var(--muted); font-weight: 400; font-size: 12px; }
-      .entry.flash .bubble { outline: 2px solid #f5a623; outline-offset: 1px; }
+      .ov-status.done { background: #9be7b4; }
+      .ov-status.progress { background: #bcdcff; }
+      .ov-status.review { background: var(--researcher); }
+      .ov-status.changes { background: #ffb3a8; }
+      #ov-progress { color: var(--muted); font-weight: 700; font-size: 12px; }
+      .entry.flash .bubble { outline: 3px solid var(--advisor); outline-offset: 2px; }
+      /* Long unbroken tokens (paths, identifiers in `code`, URLs) wrap anywhere
+         rather than widening the pane; <pre> blocks keep their own scrolling. */
+      #task, #goals, #agent-info, .md { overflow-wrap: anywhere; }
+      #task code, #goals code, #agent-info code, .md code { overflow-wrap: anywhere; word-break: break-word; }
+      #task pre code, #goals pre code, .md pre code { overflow-wrap: normal; word-break: normal; }
       #goals { padding: 12px 14px; font-size: 13px; line-height: 1.55; color: var(--text); }
-      #goals .muted-note { color: var(--muted); font: 12px/1.5 var(--mono); }
-      #goals h1 { font-size: 16px; margin: 4px 0 8px; }
-      #goals h2 { font-size: 14px; margin: 14px 0 6px; border-bottom: 1px solid var(--border); padding-bottom: 3px; }
-      #goals h3 { font-size: 13px; margin: 12px 0 4px; }
+      .muted-note { color: var(--muted); font: italic 12px/1.5 var(--toon); }
+      #goals h1 { font: 800 17px var(--toon); margin: 4px 0 8px; }
+      #goals h2 { font: 800 15px var(--toon); margin: 14px 0 6px; border-bottom: 2px solid var(--ink); padding-bottom: 3px; }
+      #goals h3 { font: 800 13px var(--toon); margin: 12px 0 4px; }
       #goals h4, #goals h5, #goals h6 { font-size: 12px; margin: 10px 0 4px; color: var(--muted); }
       #goals p { margin: 6px 0; }
       #goals ul, #goals ol { margin: 4px 0 8px; padding-left: 20px; }
@@ -193,32 +283,65 @@
       #goals li.d1 { margin-left: 16px; }
       #goals li.d2 { margin-left: 32px; }
       #goals li.d3 { margin-left: 48px; }
-      #goals code { background: #10141b; border-radius: 4px; padding: 1px 4px; font: 12px var(--mono); color: #ffd479; }
-      #goals pre { background: #10141b; border-radius: 6px; padding: 8px; overflow-x: auto; }
-      #goals pre code { background: none; padding: 0; }
-      #goals a { color: var(--researcher); }
-      #goals blockquote { margin: 6px 0; padding: 2px 10px; border-left: 3px solid var(--border); color: var(--muted); }
-      #goals hr { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
-      .entry { margin: 0 0 12px; }
-      .entry .meta { font-size: 11px; color: var(--muted); margin-bottom: 4px; display: flex; gap: 8px; align-items: center; }
-      .entry .meta .who { font-weight: 700; }
-      .who.researcher { color: var(--researcher); }
-      .who.advisor { color: var(--advisor); }
-      .who.human { color: var(--human); }
-      .who.control { color: var(--control); }
-      .bubble {
-        background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
-        padding: 8px 10px; white-space: pre-wrap; word-break: break-word;
+      #goals code { background: var(--researcher-soft); border-radius: 4px; padding: 1px 4px; font: 12px var(--mono); color: #6b4a00; }
+      #goals pre { background: #f4efe2; border: 2px solid var(--ink); border-radius: 8px; padding: 8px; overflow-x: auto; }
+      #goals pre code { background: none; padding: 0; color: var(--text); }
+      #goals a { color: var(--denim); }
+      #goals blockquote { margin: 6px 0; padding: 2px 10px; border-left: 4px solid var(--researcher); color: var(--muted); }
+      #goals hr { border: none; border-top: 2px dashed var(--soft-border); margin: 12px 0; }
+      .entry { margin: 0 0 16px; }
+      .entry .meta { font-size: 11px; color: var(--muted); margin-bottom: 5px; padding-left: 6px; display: flex; gap: 8px; align-items: center; white-space: nowrap; }
+      /* One line: the speech tail hangs below the name, so the meta must not wrap. */
+      .entry .meta > * { flex: none; }
+      .entry .meta > span:not(.who):not(.who-role):not(:last-child) { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+      .who { font: 800 13px var(--toon); display: inline-flex; align-items: center; gap: 4px; --name-shift: 8px; }
+      .who::before { content: ""; width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--ink); background: currentColor; flex: none; }
+      .who.researcher::before, .who.advisor::before {
+        width: 20px; height: 20px; border: none; border-radius: 0; background: var(--hat-pat) center / contain no-repeat;
       }
-      .entry.researcher .bubble { border-left: 3px solid var(--researcher); }
-      .entry.advisor .bubble { border-left: 3px solid var(--advisor); }
-      .entry.human .bubble { border-left: 3px solid var(--human); }
-      .entry.control .bubble { border-left: 3px solid var(--control); }
-      .entry.handoff .bubble { background: var(--panel2); font-family: var(--mono); font-size: 12px; }
-      .entry.tool .bubble { background: #10141b; font-family: var(--mono); font-size: 12px; color: #a7b1c2; }
-      .entry .role { font-size: 11px; color: var(--muted); }
+      .who.advisor::before { background-image: var(--hat-mat); }
+      .who.researcher, .who.advisor { --name-shift: 12px; }
+      .ov-who.researcher::before, .ov-who.advisor::before { width: 16px; height: 16px; }
+      .who.researcher { color: var(--researcher-ink); }
+      .who.advisor { color: var(--advisor-ink); }
+      .who.human { color: var(--human-ink); }
+      .who.control { color: var(--control); }
+      .who-role {
+        font: 700 10px var(--toon); text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+        border: 1.5px solid var(--soft-border); border-radius: 999px; padding: 0 6px; background: #fff;
+      }
+      .bubble {
+        background: var(--bubble-bg, #fff); border: 2px solid var(--ink); border-radius: 14px;
+        padding: 9px 12px; white-space: pre-wrap; word-break: break-word; box-shadow: var(--pop);
+        position: relative;
+      }
+      .entry.researcher { --bubble-bg: var(--researcher-soft); }
+      .entry.advisor { --bubble-bg: var(--advisor-soft); }
+      .entry.human { --bubble-bg: var(--human-soft); }
+      .entry.control { --bubble-bg: var(--control-soft); }
+      .entry.tool { --bubble-bg: #f2f4f8; }
+      .entry.researcher .bubble { border-left: 7px solid var(--researcher); }
+      .entry.advisor .bubble { border-left: 7px solid var(--advisor); }
+      .entry.human .bubble { border-left: 7px solid var(--human); }
+      .entry.control .bubble { border-left: 7px solid var(--control); }
+      /* Speech-bubble tail: a diamond hung below the speaker's name whose
+         lower half covers the bubble's top border, pointing at the name. */
+      .entry:has(> .bubble) .meta .who { position: relative; }
+      .entry:has(> .bubble) .meta .who::after {
+        content: ""; position: absolute; z-index: 1; width: 11px; height: 11px;
+        left: calc(50% + var(--name-shift)); top: calc(100% + 1px);
+        transform: translateX(-50%) rotate(45deg);
+        background: var(--bubble-bg, #fff); border-top: 2px solid var(--ink); border-left: 2px solid var(--ink);
+        border-top-left-radius: 2px;
+      }
+      .entry.handoff .bubble { font-family: var(--mono); font-size: 12px; border-style: solid; border-width: 2px 2px 2px 7px; }
+      .entry.handoff .bubble .md, .entry.handoff .bubble .field { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 13px; }
+      .entry.tool .bubble { font-family: var(--mono); font-size: 12px; color: #3c4459; box-shadow: var(--pop-sm); border-radius: 10px; }
+      .entry .role { font: 700 11px var(--toon); color: var(--muted); }
+      .entry .meta > span:not(.who):not(.who-role) { font-family: var(--toon); }
       .entry.streaming .bubble { border-style: dashed; }
-      .entry.streaming .meta .pulse::before { content: "●"; margin-right: 4px; color: #f5a623; animation: pulse 1.2s ease-in-out infinite; }
+      .entry.streaming .meta .pulse::before { content: "🔨"; display: inline-block; margin-right: 4px; transform-origin: 70% 80%; animation: hammer .7s ease-in-out infinite; }
+      @keyframes hammer { 0%, 100% { transform: rotate(10deg); } 50% { transform: rotate(-45deg); } }
       @keyframes pulse { 50% { opacity: .25; } }
       .stream-thinking {
         margin: 0; max-height: 12em; overflow-y: auto; color: var(--muted); font-style: italic;
@@ -227,97 +350,131 @@
       .stream-thinking:not(:empty) + .stream-text:not(:empty) { margin-top: 8px; }
       .stream-tools { margin-top: 6px; font: 12px var(--mono); color: var(--muted); }
       details { margin-top: 6px; }
-      summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+      summary { cursor: pointer; color: var(--muted); font: 700 12px var(--toon); }
       pre { margin: 6px 0 0; white-space: pre-wrap; word-break: break-word; font-family: var(--mono); font-size: 12px; }
       .clamp { max-height: 7.6em; overflow: hidden; }
       .clamp.expanded { max-height: none; }
-      .more { display: block; margin-top: 6px; font-size: 11px; color: var(--muted); background: none; border: none; padding: 0; cursor: pointer; }
-      .more:hover { color: var(--text); }
+      .more {
+        display: inline-block; margin-top: 8px; font: 800 11px var(--toon); color: var(--ink); background: #fff;
+        border: 1.5px solid var(--ink); border-radius: 999px; padding: 1px 10px; cursor: pointer; box-shadow: var(--pop-sm);
+      }
+      .more:hover { background: var(--researcher); }
       .more[hidden] { display: none !important; }
       .field { margin-top: 8px; }
-      .field .k { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin-bottom: 2px; }
+      .field .k { display: block; font: 800 11px var(--toon); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 2px; }
       .field ul { margin: 2px 0 0; padding-left: 18px; }
       .field li { margin: 2px 0; }
       .field .v { white-space: pre-wrap; }
       .kv { margin-top: 6px; font-size: 12px; }
       .kv .k { color: var(--muted); margin-right: 6px; }
       .nested { margin-top: 6px; }
-      .toolcall { color: #79c0ff; }
-      .err { color: var(--err); }
-      .ok { color: var(--ok); }
-      .composer { display: flex; gap: 6px; padding: 10px 14px; border-top: 1px solid var(--border); }
-      .composer textarea { flex: 1; background: var(--panel2); color: var(--text); border: 1px solid var(--border);
-        border-radius: 6px; padding: 6px 8px; resize: vertical; min-height: 38px; font: inherit; }
-      .composer select { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; }
-      button { background: var(--panel2); color: var(--text); border: 1px solid var(--border);
-        border-radius: 6px; padding: 6px 12px; cursor: pointer; font: inherit; }
-      button:hover { border-color: #3d4757; }
-      button.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
-      button.danger { background: #6b1f1f; border-color: #6b1f1f; color: #fff; }
-      #approval { display: none; padding: 10px 14px; border-top: 1px solid var(--border); background: #2a2200; }
+      .toolcall { color: var(--denim); }
+      .err { color: var(--err); font-weight: 700; }
+      .ok { color: var(--ok); font-weight: 700; }
+      .composer { display: flex; flex-direction: column; gap: 8px; padding: 10px 14px; border-top: 3px solid var(--ink); background: var(--panel2); }
+      .composer textarea { width: 100%; background: #fff; color: var(--text); border: 2px solid var(--ink);
+        border-radius: 10px; padding: 6px 8px; resize: vertical; min-height: 64px; font: inherit; }
+      .composer textarea:focus { outline: none; box-shadow: 0 0 0 3px var(--researcher); }
+      .composer-row { display: flex; align-items: center; gap: 8px; }
+      .composer-to { display: inline-flex; align-items: center; gap: 6px; min-width: 0; flex: 1; font: 700 12px var(--toon); color: var(--muted); }
+      .composer select { min-width: 0; max-width: 100%; background: #fff; color: var(--text); border: 2px solid var(--ink); border-radius: 10px; font: 700 12px var(--toon); padding: 4px 6px; }
+      .composer-row button { flex: none; margin-left: auto; }
+      button { background: #fff; color: var(--ink); border: 2px solid var(--ink);
+        border-radius: 10px; padding: 5px 12px; cursor: pointer; font: 700 13px var(--toon); box-shadow: var(--pop-sm);
+        transition: transform .08s, box-shadow .08s; }
+      button:hover { background: var(--panel2); }
+      button:active { transform: translate(2px, 2px); box-shadow: none; }
+      button.primary { background: #5fd38a; color: var(--ink); }
+      button.primary:hover { background: #4cc77a; }
+      button.danger { background: var(--advisor); color: #fff; }
+      button.danger:hover { background: #d33424; }
+      #approval {
+        display: none; padding: 12px 14px; border-top: 3px solid var(--ink);
+        background: repeating-linear-gradient(-45deg, var(--researcher) 0 14px, #ffe066 14px 28px);
+      }
       #approval.visible { display: block; }
-      #approval textarea { width: 100%; background: var(--panel2); color: var(--text); border: 1px solid var(--border);
-        border-radius: 6px; padding: 6px; margin: 6px 0; font: inherit; }
+      #approval .row:first-child b {
+        font: 900 15px var(--toon); background: #fff; border: 2px solid var(--ink); border-radius: 8px;
+        padding: 2px 8px; box-shadow: var(--pop-sm); display: inline-flex; align-items: center; gap: 6px;
+      }
+      #approval textarea { width: 100%; background: #fff; color: var(--text); border: 2px solid var(--ink);
+        border-radius: 10px; padding: 6px; margin: 8px 0; font: inherit; }
       .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-      .filters { display: inline-flex; gap: 4px; }
+      .filters { display: inline-flex; gap: 6px; flex-wrap: wrap; }
       /* Markdown inside transcript bubbles. */
       .md { white-space: normal; }
       .md > :first-child { margin-top: 0; }
       .md > :last-child { margin-bottom: 0; }
       .md p { margin: 6px 0; }
-      .md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { font-size: 14px; margin: 10px 0 4px; }
-      .md h1, .md h2 { border-bottom: 1px solid var(--border); padding-bottom: 2px; }
+      .md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { font: 800 14px var(--toon); margin: 10px 0 4px; }
+      .md h1, .md h2 { border-bottom: 2px solid var(--ink); padding-bottom: 2px; }
       .md ul, .md ol { margin: 4px 0 6px; padding-left: 22px; }
       .md li { margin: 1px 0; }
-      .md code { background: #10141b; border-radius: 4px; padding: 1px 4px; font: 12px var(--mono); color: #ffd479; }
-      .md pre { background: #10141b; border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; overflow-x: auto; white-space: pre; }
+      .md code { background: rgba(29,35,64,.08); border-radius: 4px; padding: 1px 4px; font: 12px var(--mono); color: #5a2e8a; }
+      .md pre { background: #fbf8ef; border: 2px solid var(--ink); border-radius: 8px; padding: 8px 10px; overflow-x: auto; white-space: pre; }
       .md pre code { background: none; padding: 0; color: var(--text); }
-      .md blockquote { margin: 6px 0; padding: 2px 10px; border-left: 3px solid var(--border); color: var(--muted); }
+      .md blockquote { margin: 6px 0; padding: 2px 10px; border-left: 4px solid var(--soft-border); color: var(--muted); }
       .md table { border-collapse: collapse; margin: 6px 0; font-size: 13px; display: block; overflow-x: auto; }
-      .md th, .md td { border: 1px solid var(--border); padding: 3px 8px; text-align: left; }
-      .md th { background: var(--panel2); }
-      .md a { color: var(--researcher); }
-      .md hr { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
+      .md th, .md td { border: 1.5px solid var(--ink); padding: 3px 8px; text-align: left; }
+      .md th { background: var(--panel2); font-family: var(--toon); }
+      .md a { color: var(--denim); font-weight: 600; }
+      .md hr { border: none; border-top: 2px dashed var(--soft-border); margin: 10px 0; }
       .md img { max-width: 100%; }
       /* Agent tree (root session + subagents). */
       #agents-pane { width: 230px; min-width: 160px; }
-      #agents-pane .side-head label { font-weight: 400; font-size: 11px; color: var(--muted); display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
-      #agent-tree { flex: 1; overflow-y: auto; padding: 8px 6px; font-size: 12px; }
-      #agent-tree ul { list-style: none; margin: 0; padding-left: 14px; border-left: 1px dashed var(--border); }
+      #agent-tree { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 10px 8px; font-size: 12px; }
+      #agent-tree ul { list-style: none; margin: 0; padding-left: 14px; border-left: 2px dashed var(--soft-border); }
       #agent-tree > ul { padding-left: 0; border-left: none; }
-      #agent-tree li { margin: 2px 0; }
+      #agent-tree li { margin: 4px 0; }
       .agent-node {
-        display: flex; align-items: center; gap: 6px; width: 100%; text-align: left; padding: 4px 6px;
-        background: none; border: 1px solid transparent; border-radius: 6px; color: var(--text); font: inherit; cursor: pointer;
+        display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; width: 100%; text-align: left; padding: 5px 7px;
+        background: #fff; border: 2px solid var(--ink); border-radius: 10px; color: var(--text); font: inherit; cursor: pointer;
+        box-shadow: none; min-width: 0; overflow: hidden;
       }
-      .agent-node:hover { background: var(--panel2); border-color: var(--border); }
-      .agent-node.selected { background: #202a3d; border-color: #3d4757; }
-      .agent-node .an-id { font-weight: 700; flex: none; }
+      .agent-node:hover { background: var(--panel2); }
+      .agent-node.selected { background: var(--researcher-soft); box-shadow: var(--pop-sm); }
+      .agent-node .an-id { font: 800 13px var(--toon); flex: none; }
       .agent-node .an-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
       .agent-node.selected .an-title { color: var(--text); }
       .agent-node .dot { flex: none; }
-      .agent-node .an-state { flex: none; font-size: 10px; color: var(--muted); }
+      .agent-node .an-state { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 700 10px var(--toon); color: var(--muted); }
+      .agent-node .an-stats {
+        flex-basis: 100%; display: flex; gap: 8px; padding-left: 13px; font-size: 10px; color: var(--muted);
+        font-variant-numeric: tabular-nums; white-space: nowrap; min-width: 0; overflow: hidden;
+      }
+      .agent-node .an-stats > span { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+      .agent-node .an-stats .r, .agent-node .an-stats .a { font-weight: 700; }
+      .agent-node .an-stats .r::before, .agent-node .an-stats .a::before {
+        content: ""; display: inline-block; width: 12px; height: 12px; margin-right: 2px; vertical-align: -2px;
+        background: var(--hat-pat) center / contain no-repeat;
+      }
+      .agent-node .an-stats .a::before { background-image: var(--hat-mat); }
+      .agent-node .an-stats .r { color: var(--researcher-ink); }
+      .agent-node .an-stats .a { color: var(--advisor-ink); }
+      .agent-node .an-stats .rt { margin-left: auto; }
       #view-agent { color: var(--text); }
       .open-agent { margin-top: 8px; font-size: 12px; padding: 3px 10px; }
-      #agent-info { padding: 12px 14px; border-bottom: 1px solid var(--border); font-size: 13px; line-height: 1.55; }
+      #agent-info { padding: 12px 14px; border-bottom: 2px dashed var(--soft-border); font-size: 13px; line-height: 1.55; }
       #agent-info:empty { display: none; }
-      #agent-info .ai-head { font-weight: 600; margin-bottom: 4px; }
+      #agent-info .ai-head { font: 800 14px var(--toon); margin-bottom: 4px; }
       #agent-info .ai-sub { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
-      #agent-info h4 { font-size: 12px; margin: 10px 0 4px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+      #agent-info h4 { font: 800 12px var(--toon); margin: 10px 0 4px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
       #agent-info .md code { font-size: 12px; }
     </style>
   </head>
   <body>
     <header>
-      <span class="brand"><img id="brand-icon" alt="" width="18" height="18" /><h1>research-loop</h1><span id="run-label"></span></span>
+      <span class="brand" title="Pat & Mat Software Factory: Pat researches, Mat advises. A je to!"><img id="brand-icon" alt="" width="34" height="34" /><h1><span class="pat">Pat</span><span class="amp">&amp;</span><span class="mat">Mat</span><small>Software Factory</small></h1><span id="run-label"></span></span>
       <span id="state" class="badge state">…</span>
+      <div class="ticker" id="ticker"><div class="ticker-track">
       <span class="stat" title="current goal">goal <b id="goal">-</b></span>
       <span class="stat" title="handoffs between the agents"><b id="handoffs">0</b> handoffs</span>
       <span class="stat" id="tok-stat"><b id="tok-total">0</b> tokens</span>
       <span class="stat" title="who the state machine expects to act next">next <b id="expecting">-</b></span>
       <span class="stat" id="active-stat" title="the agent session currently working" hidden>active <b id="active-agent">-</b></span>
-      <span class="stat agent-live"><i class="dot" id="dot-researcher"></i>researcher <b id="live-researcher" class="live">offline</b></span>
-      <span class="stat agent-live"><i class="dot" id="dot-advisor"></i>advisor <b id="live-advisor" class="live">offline</b></span>
+      <span class="stat agent-live" title="Pat, the researcher"><i class="hat pat"></i><i class="dot" id="dot-researcher"></i>Pat <b id="live-researcher" class="live">offline</b></span>
+      <span class="stat agent-live" title="Mat, the advisor"><i class="hat mat"></i><i class="dot" id="dot-advisor"></i>Mat <b id="live-advisor" class="live">offline</b></span>
+      </div></div>
       <span class="header-tools">
         <button id="notify-btn" class="icon-btn" type="button" hidden aria-pressed="false">
           <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M12 22a2.5 2.5 0 0 0 2.45-2h-4.9A2.5 2.5 0 0 0 12 22Zm7-6V11a7 7 0 0 0-5.5-6.84V3.5a1.5 1.5 0 0 0-3 0v.66A7 7 0 0 0 5 11v5l-2 2v1h18v-1l-2-2Z"/></svg>
@@ -326,7 +483,7 @@
     </header>
     <main>
       <aside id="agents-pane" class="pane">
-        <div class="side-head"><span class="side-title">Agents</span><label title="Switch to whichever agent is working"><input type="checkbox" id="follow-active" checked />follow</label><button class="collapse-btn" type="button"></button></div>
+        <div class="side-head"><span class="side-title">Agents</span><button class="collapse-btn" type="button"></button></div>
         <div id="agent-tree"></div>
       </aside>
       <div class="divider" id="resize-agents" title="Drag to resize"></div>
@@ -338,39 +495,43 @@
           <div id="goals"><div class="muted-note">(not yet written)</div></div>
         </div>
         <div id="approval">
-          <div class="row"><b>Task completion requires your approval.</b></div>
+          <div class="row"><b><i class="hat pat"></i><i class="hat mat"></i>A je to? Pat &amp; Mat think the task is done. Your call.</b></div>
           <textarea id="approval-note" placeholder="Optional note to the agents…"></textarea>
           <div class="row">
-            <button class="primary" onclick="humanDecision('approve')">Approve completion</button>
+            <button class="primary" onclick="humanDecision('approve')">A je to! (approve)</button>
             <button onclick="humanDecision('extend')">Extend budget</button>
-            <button class="danger" onclick="humanDecision('reject')">Reject / keep working</button>
+            <button class="danger" onclick="humanDecision('reject')">Not quite, keep working</button>
           </div>
         </div>
         <div class="composer">
-          <select id="target">
-            <option value="researcher">researcher</option>
-            <option value="advisor">advisor</option>
-          </select>
           <textarea id="human-text" placeholder="Inject a message (any time)…"></textarea>
-          <button onclick="sendHumanMessage()">Send</button>
+          <div class="composer-row">
+            <label class="composer-to">to
+              <select id="target">
+                <option value="researcher">Pat (researcher)</option>
+                <option value="advisor">Mat (advisor)</option>
+              </select>
+            </label>
+            <button onclick="sendHumanMessage()">Send</button>
+          </div>
         </div>
       </aside>
       <div class="divider" id="resize-goals" title="Drag to resize"></div>
       <div id="timeline-wrap">
         <div id="timeline-tools">
           <span class="searchbox">
-            <input id="search" type="search" placeholder="search transcript…" autocomplete="off" />
+            <input id="search" type="search" placeholder="search the workshop…" autocomplete="off" />
             <span id="search-count" title="matching transcript entries"></span>
           </span>
           <span class="filters" title="show/hide entries by author">
-            <label class="chip researcher"><input type="checkbox" data-filter="researcher" checked />researcher</label>
-            <label class="chip advisor"><input type="checkbox" data-filter="advisor" checked />advisor</label>
+            <label class="chip researcher" title="researcher"><input type="checkbox" data-filter="researcher" checked />Pat</label>
+            <label class="chip advisor" title="advisor"><input type="checkbox" data-filter="advisor" checked />Mat</label>
             <label class="chip human"><input type="checkbox" data-filter="human" checked />human</label>
             <label class="chip control"><input type="checkbox" data-filter="control" checked />control</label>
           </span>
         </div>
         <div id="timeline"></div>
-        <button id="latest" class="latest" type="button" hidden>↓ latest</button>
+        <button id="latest" class="latest" type="button" hidden>↓ latest news</button>
       </div>
       <div class="divider" id="resize-overview" title="Drag to resize"></div>
       <section id="overview-wrap" class="pane">
@@ -415,7 +576,8 @@
       // composer show one agent at a time; the tree pane switches between them.
       const ROOT = "root";
       let selectedAgent = ROOT;
-      let followActive = true;
+      // Auto-switch the view to whichever agent is working. Off for now (no UI toggle).
+      const followActive = false;
       let allEntries = [];
       let agentsById = new Map();
       const agentOf = (entry) => entry.agentId || ROOT;
@@ -431,6 +593,9 @@
       }
       const tokens = { researcher: { in: 0, out: 0, cache: 0, reasoning: 0 }, advisor: { in: 0, out: 0, cache: 0, reasoning: 0 } };
       const lastActivity = { researcher: null, advisor: null };
+      // Provider/control-plane outage being waited out, per role (from the
+      // retry notes the agents write): { retryAt, since } or null.
+      const outageWait = { researcher: null, advisor: null };
 
       function atBottom() {
         return timeline.scrollTop + timeline.clientHeight >= timeline.scrollHeight - 60;
@@ -496,6 +661,71 @@
         t.cache += usage.cacheRead || 0;
       }
 
+      // Per-agent usage and activity span, for the agent tree.
+      // agentId -> { researcher: {in,out,cache}, advisor: {in,out,cache}, firstTs, lastTs }
+      let agentStats = new Map();
+      function statsFor(id) {
+        if (!agentStats.has(id)) {
+          agentStats.set(id, {
+            researcher: { in: 0, out: 0, cache: 0 },
+            advisor: { in: 0, out: 0, cache: 0 },
+            firstTs: null,
+            lastTs: null,
+          });
+        }
+        return agentStats.get(id);
+      }
+      function recordAgentEntry(entry) {
+        const st = statsFor(agentOf(entry));
+        if (typeof entry.ts === "number" && entry.ts > 0) {
+          if (st.firstTs === null || entry.ts < st.firstTs) st.firstTs = entry.ts;
+          if (st.lastTs === null || entry.ts > st.lastTs) st.lastTs = entry.ts;
+        }
+        const t = st[entry.agent];
+        if (t && entry.kind === "message" && entry.role === "assistant" && entry.usage) {
+          t.in += entry.usage.input || 0;
+          t.out += entry.usage.output || 0;
+          t.cache += entry.usage.cacheRead || 0;
+        }
+      }
+      function fmtDuration(ms) {
+        const sec = Math.max(0, Math.round(ms / 1000));
+        const h = Math.floor(sec / 3600);
+        const m = Math.floor((sec % 3600) / 60);
+        const ss = sec % 60;
+        if (h) return `${h}h ${m}m`;
+        if (m) return `${m}m ${ss}s`;
+        return `${ss}s`;
+      }
+      function tokenTip(role, t) {
+        const total = t.in + t.out + t.cache;
+        return `${whoName(role)} (${role}) tokens: ${fmtNum(total)}\nin ${fmtNum(t.in)} · out ${fmtNum(t.out)} · cached ${fmtNum(t.cache)}`;
+      }
+      /** Refresh the token/runtime line of every node in the agent tree. */
+      function updateTreeStats() {
+        const runOver = currentState?.state === "DONE" || currentState?.state === "ABORTED";
+        for (const el of agentTree.querySelectorAll(".an-stats")) {
+          const id = el.dataset.agent;
+          const st = statsFor(id);
+          const a = agentsById.get(id);
+          for (const [role, cls] of [["researcher", "r"], ["advisor", "a"]]) {
+            const t = st[role];
+            const span = el.querySelector(`.${cls}`);
+            span.textContent = fmtCompact(t.in + t.out + t.cache);
+            span.title = tokenTip(role, t);
+          }
+          // A live agent's span keeps growing; a finished one ends at its last entry.
+          const finished = runOver || a?.state === "DONE" || a?.state === "ABORTED";
+          const end = finished ? st.lastTs : Date.now();
+          const rt = el.querySelector(".rt");
+          rt.textContent = st.firstTs ? fmtDuration(end - st.firstTs) : "–";
+          rt.title = st.firstTs
+            ? `runtime: first entry ${new Date(st.firstTs).toLocaleString()}` +
+              (finished && st.lastTs ? `, last ${new Date(st.lastTs).toLocaleString()}` : ", still running")
+            : "no activity yet";
+        }
+      }
+
       function fmtNum(n) {
         return (n || 0).toLocaleString("en-US");
       }
@@ -529,6 +759,16 @@
             dot.className = "dot";
             continue;
           }
+          const wait = outageWait[role];
+          if (wait) {
+            const left = wait.retryAt - Date.now();
+            el.className = "live idle";
+            el.textContent = left > 0 ? `provider down · retry in ${fmtDuration(left)}` : "provider down · retrying";
+            el.title = `waiting out a provider outage since ${new Date(wait.since).toLocaleTimeString()}`;
+            dot.className = "dot idle";
+            continue;
+          }
+          el.title = "";
           const ago = fmtAgo(lastActivity[role]);
           const cls = ago === "active" ? "active" : lastActivity[role] ? "idle" : "offline";
           el.className = `live ${cls}`;
@@ -540,13 +780,33 @@
         document.getElementById("tok-stat").title =
           `tokens: ${fmtNum(total)}\nin ${fmtNum(tot.in)} · out ${fmtNum(tot.out)} · cached ${fmtNum(tot.cache)}`;
         const expectEl = document.getElementById("expecting");
-        expectEl.textContent = state?.expecting || "–";
+        expectEl.textContent = state?.expecting ? whoName(state.expecting) : "–";
         expectEl.title =
           expectEl.textContent === "–"
             ? "no agent expected (awaiting human or finished)"
-            : `the ${expectEl.textContent} should act next`;
+            : `${expectEl.textContent} (the ${state.expecting}) should act next`;
       }
-      setInterval(() => updateStats(currentState), 1000);
+      // Header stats ticker: scroll only by as much as overflows (rounded, so the
+      // per-second liveness updates rarely change the animation).
+      const ticker = document.getElementById("ticker");
+      function updateTicker() {
+        const over = ticker.firstElementChild.scrollWidth - ticker.clientWidth;
+        ticker.classList.toggle("scrolling", over > 0);
+        if (over <= 0) return;
+        const shift = Math.ceil((over + 12) / 24) * 24;
+        ticker.style.setProperty("--ticker-shift", `${shift}px`);
+        ticker.style.setProperty("--ticker-dur", `${Math.max(8, Math.round(shift / 12))}s`);
+      }
+      if ("ResizeObserver" in window) {
+        const ro = new ResizeObserver(updateTicker);
+        ro.observe(ticker);
+        ro.observe(ticker.firstElementChild);
+      }
+
+      setInterval(() => {
+        updateStats(currentState);
+        updateTreeStats();
+      }, 1000);
 
       function esc(s) {
         return String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
@@ -572,6 +832,7 @@
           ["feedback", "Feedback"],
           ["rationale", "Rationale"],
           ["instructions", "Instructions"],
+          ["executionRationale", "Execution rationale"],
         ]) {
           if (typeof payload[k] === "string" && payload[k].trim()) {
             parts.push(`<div class="field"><span class="k">${label}</span><div class="md">${renderMarkdown(payload[k], true)}</div></div>`);
@@ -623,8 +884,20 @@
         return parts.join("");
       }
 
+      // Pat (yellow) is the researcher, Mat (red) the advisor. The UI uses
+      // their names; the role stays visible next to them.
+      const WHO_NAMES = { researcher: "Pat", advisor: "Mat" };
+      function whoName(who) {
+        return WHO_NAMES[who] || who;
+      }
+      function whoHtml(who, cls = "who", withRole = true) {
+        const name = whoName(who);
+        return `<span class="${cls} ${esc(who)}" title="${esc(who)}">${esc(name)}</span>` +
+          (withRole && name !== who ? `<span class="who-role">${esc(who)}</span>` : "");
+      }
+
       function metaHtml(who, entry, extra = "") {
-        return `<div class="meta"><span class="who ${who}">${who}</span>${extra}<span>${fmtTime(entry.ts)}</span></div>`;
+        return `<div class="meta">${whoHtml(who)}${extra}<span>${fmtTime(entry.ts)}</span></div>`;
       }
 
       function bubble(inner) {
@@ -919,7 +1192,7 @@
         // Inside its own goal section the goal id would be redundant.
         const goalTag = goalId && !isGoalItem ? ` <span class="ov-goal">${esc(goalId)}</span>` : "";
         el.innerHTML =
-          `<div class="ov-top"><span class="ov-who ${who}">${esc(who)}</span><span>${fmtTime(entry.ts)}</span></div>` +
+          `<div class="ov-top">${whoHtml(who, "who ov-who", false)}<span>${fmtTime(entry.ts)}</span></div>` +
           `<span class="ov-label">${esc(label)}${goalTag}</span>`;
         el.addEventListener("click", () => {
           target.scrollIntoView({ behavior: "smooth", block: "start", inline: "nearest" });
@@ -950,10 +1223,19 @@
       /** Record an entry (stats, liveness) and render it if the selected agent shows it. */
       function addEntry(entry, scroll = true, bulk = false, render = true) {
         allEntries.push(entry);
+        recordAgentEntry(entry);
         // Liveness: any entry an agent wrote counts as recent activity (recorded
         // before render filters, so skipped bookkeeping still refreshes it).
         if (entry.agent === "researcher" || entry.agent === "advisor") {
           if (typeof entry.ts === "number" && entry.ts > 0) lastActivity[entry.agent] = entry.ts;
+          if (typeof entry.retryAt === "number") {
+            outageWait[entry.agent] = { retryAt: entry.retryAt, since: entry.outageSince || entry.ts };
+          } else if (
+            (entry.kind === "message" && entry.role === "assistant" && entry.stopReason !== "error") ||
+            (entry.kind === "system" && /^provider-recovered|giving up/.test(entry.content || ""))
+          ) {
+            outageWait[entry.agent] = null;
+          }
           if (entry.kind === "message" && entry.role === "assistant" && entry.usage) {
             recordUsage(entry.agent, entry.usage);
           }
@@ -1126,7 +1408,7 @@
 
       timeline.addEventListener("click", (e) => {
         const btn = e.target.closest("[data-open-agent]");
-        if (btn) selectAgent(btn.dataset.openAgent, true);
+        if (btn) selectAgent(btn.dataset.openAgent);
       });
 
       // --- live streaming of in-progress assistant output -------------------
@@ -1233,12 +1515,12 @@
       }
 
       // --- attention: tab title, favicon badge, desktop notifications --------
-      const FAVICON_SVG = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='#161b22'/><path d='M8.5 16a7.5 7.5 0 0 1 12.6-5.5' fill='none' stroke='#4f9cf9' stroke-width='3.2' stroke-linecap='round'/><path d='M19.4 6.6l5.3 2.2-3.3 4.7z' fill='#4f9cf9'/><path d='M23.5 16a7.5 7.5 0 0 1-12.6 5.5' fill='none' stroke='#f5a623' stroke-width='3.2' stroke-linecap='round'/><path d='M12.6 25.4l-5.3-2.2 3.3-4.7z' fill='#f5a623'/></svg>`;
+      const FAVICON_SVG = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><defs><clipPath id='fc'><rect x='1' y='1' width='30' height='30' rx='8'/></clipPath></defs><g clip-path='url(#fc)'><rect width='32' height='32' fill='#ffcc1f'/><rect x='16' width='16' height='32' fill='#e8402f'/></g><rect x='1' y='1' width='30' height='30' rx='8' fill='none' stroke='#1d2340' stroke-width='2'/><g transform='translate(0.5 8) scale(.68)'><rect x='10.8' y='4' width='2.4' height='6' rx='1.2' fill='#2b3346' stroke='#1d2340' stroke-width='1.3'/><path d='M3 18C3 11.5 7 8.5 12 8.5s9 3 9 9.5z' fill='#4a5775' stroke='#1d2340' stroke-width='1.6' stroke-linejoin='round'/><path d='M6.8 13c1-1.5 2.6-2.4 4.4-2.7' fill='none' stroke='#8a97b3' stroke-width='1.3' stroke-linecap='round'/><rect x='2' y='16.4' width='20' height='4.8' rx='2.4' fill='#34405b' stroke='#1d2340' stroke-width='1.6'/></g><g transform='translate(14.5 5) scale(.72)'><defs><pattern id='ms' width='24' height='3.4' patternUnits='userSpaceOnUse'><rect width='24' height='3.4' fill='#f6f9ff'/><rect width='24' height='1.7' fill='#6f9fd8'/></pattern></defs><path d='M5.4 19C5.6 13 6.4 9 8.4 6.9c1.9-2 5.3-2 7.2 0 2 2.1 2.8 6.1 3 12.1z' fill='url(#ms)' stroke='#1d2340' stroke-width='1.6' stroke-linejoin='round'/><rect x='4' y='17.2' width='16' height='4.8' rx='2.2' fill='#5b8ccc' stroke='#1d2340' stroke-width='1.6'/><circle cx='12' cy='4.3' r='2.9' fill='#fff' stroke='#1d2340' stroke-width='1.6'/></g></svg>`;
       function faviconUri(badge) {
         const svg = badge
           ? FAVICON_SVG.replace(
               "</svg>",
-              `<circle cx="25" cy="7" r="6.5" fill="${badge}" stroke="#0e1116" stroke-width="2"/></svg>`,
+              `<circle cx="25" cy="7" r="6.5" fill="${badge}" stroke="#1d2340" stroke-width="2"/></svg>`,
             )
           : FAVICON_SVG;
         return "data:image/svg+xml," + encodeURIComponent(svg);
@@ -1250,9 +1532,9 @@
           badge: "#ffd479",
           mark: "●",
           title: "Needs your approval",
-          body: () => "The advisor accepted task completion. Approve it, or reject to keep working.",
+          body: () => "Mat (the advisor) signed off on the task. Approve it, or reject to keep Pat working.",
         },
-        DONE: { badge: "#3fb950", mark: "✓", title: "Finished", body: (s) => s.terminalReason || "Session done." },
+        DONE: { badge: "#3fb950", mark: "✓", title: "A je to!", body: (s) => s.terminalReason || "Session done." },
         ABORTED: { badge: "#f85149", mark: "✗", title: "Aborted", body: (s) => s.terminalReason || "Session aborted." },
       };
 
@@ -1291,7 +1573,7 @@
       let runLabel = "";
       function renderTitle(state) {
         const a = state ? ATTENTION[state.state] : null;
-        const name = runLabel || "research-loop";
+        const name = runLabel || "Pat & Mat";
         if (a) document.title = `${a.mark} ${a.title} · ${name}`;
         else document.title = state?.currentGoalId ? `${name} · ${state.currentGoalId}` : name;
       }
@@ -1318,7 +1600,7 @@
         // Notify only on a live transition (not on page load), when unfocused.
         if (a && !firstUpdate && notifyEnabled() && !document.hasFocus()) {
           try {
-            const n = new Notification(`research-loop: ${a.title}`, {
+            const n = new Notification(`Pat & Mat: ${a.title}`, {
               body: a.body(state),
               icon: faviconUri(a.badge),
               tag: "research-loop-state",
@@ -1333,10 +1615,13 @@
         }
       }
 
+      // "A je to!" ("There, done!") is how every Pat & Mat episode ends.
+      const STATE_LABELS = { DONE: "A je to!", AWAITING_HUMAN: "needs you!" };
       function updateState(state) {
         currentState = state;
         updateAttention(state);
-        document.getElementById("state").textContent = state.state || "?";
+        document.getElementById("state").textContent = STATE_LABELS[state.state] || state.state || "?";
+        document.getElementById("state").title = state.state || "";
         document.getElementById("state").className = "badge state " + (state.state || "");
         document.getElementById("goal").textContent = state.currentGoalId || "-";
         document.getElementById("handoffs").textContent = state.handoffs ?? 0;
@@ -1351,11 +1636,6 @@
 
       // --- agent tree -------------------------------------------------------
       const agentTree = document.getElementById("agent-tree");
-      const followBox = document.getElementById("follow-active");
-      followBox.addEventListener("change", () => {
-        followActive = followBox.checked;
-        if (followActive && currentState?.activeAgent) selectAgent(currentState.activeAgent);
-      });
 
       function updateAgents(state) {
         const list = Array.isArray(state.agents) && state.agents.length ? state.agents : [{ id: ROOT, parentId: null, state: state.state }];
@@ -1402,12 +1682,13 @@
             btn.type = "button";
             btn.className = `agent-node${a.id === selectedAgent ? " selected" : ""}`;
             const st = agentStatus(a);
-            btn.title = `${a.id === ROOT ? "Main session" : `Subagent ${a.id}`}${a.title ? `: ${a.title}` : ""}\nstate: ${a.state}`;
             btn.innerHTML =
-              `<i class="dot ${st.dot}"></i><span class="an-id">${esc(a.id === ROOT ? "main" : a.id)}</span>` +
-              `<span class="an-title">${esc(a.id === ROOT ? "" : a.title || "")}</span>` +
-              `<span class="an-state">${esc(st.text)}</span>`;
-            btn.addEventListener("click", () => selectAgent(a.id, true));
+              `<i class="dot ${st.dot}" title="state: ${esc(a.state)}"></i>` +
+              `<span class="an-id" title="${esc(a.id === ROOT ? "Main session" : `Subagent ${a.id}`)}">${esc(a.id === ROOT ? "main" : a.id)}</span>` +
+              `<span class="an-title" title="${esc(a.title || "")}">${esc(a.id === ROOT ? "" : a.title || "")}</span>` +
+              `<span class="an-state" title="state: ${esc(a.state)}">${esc(st.text)}</span>` +
+              `<span class="an-stats" data-agent="${esc(a.id)}"><span class="r"></span><span class="a"></span><span class="rt"></span></span>`;
+            btn.addEventListener("click", () => selectAgent(a.id));
             li.appendChild(btn);
             const sub = build(a.id);
             if (sub) li.appendChild(sub);
@@ -1418,13 +1699,10 @@
         agentTree.innerHTML = "";
         const tree = build(null);
         if (tree) agentTree.appendChild(tree);
+        updateTreeStats();
       }
 
-      function selectAgent(id, manual = false) {
-        if (manual) {
-          followActive = id === (currentState?.activeAgent || ROOT);
-          followBox.checked = followActive;
-        }
+      function selectAgent(id) {
         if (id === selectedAgent) {
           renderTree();
           return;
@@ -1551,6 +1829,8 @@
           // so a reconnect cannot duplicate entries.
           allEntries = [];
           for (const k of Object.keys(tokens)) tokens[k] = { in: 0, out: 0, cache: 0, reasoning: 0 };
+          outageWait.researcher = outageWait.advisor = null;
+          agentStats = new Map();
           for (const entry of msg.entries || []) addEntry(entry, false, true, false);
           rerenderTimeline();
         } else if (msg.type === "entry") {

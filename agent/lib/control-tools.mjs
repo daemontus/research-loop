@@ -37,8 +37,30 @@ const ADVISORY = Type.Optional(
   }),
 );
 
-/** Tool definitions for the researcher role. */
-export function researcherControlToolDefs() {
+/** Plan fields recording who carries out a goal (only when subagents are available). */
+const EXECUTION_FIELDS = {
+  execution: Type.Optional(
+    Type.Union([Type.Literal("self"), Type.Literal("subagent")], {
+      description:
+        "Who executes this goal once approved: 'self' (you, in this conversation) or " +
+        "'subagent' (you delegate it with propose_subagent right after approval). Always set it.",
+    }),
+  ),
+  executionRationale: Type.Optional(
+    Type.String({
+      description:
+        "One or two sentences on why this goal is (or is not) self-contained enough to delegate.",
+    }),
+  ),
+};
+
+/**
+ * Tool definitions for the researcher role.
+ * @param {{ canSpawnSubagents?: boolean }} [opts] whether this researcher may
+ *   delegate (adds the plan's execution fields; propose_subagent is filtered
+ *   by the caller)
+ */
+export function researcherControlToolDefs({ canSpawnSubagents = true } = {}) {
   return [
     {
       name: "propose_skills",
@@ -141,6 +163,7 @@ export function researcherControlToolDefs() {
             { description: "Optional decomposition of this goal into subgoals." },
           ),
         ),
+        ...(canSpawnSubagents ? EXECUTION_FIELDS : {}),
       }),
     },
     {

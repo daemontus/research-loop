@@ -75,6 +75,11 @@ function parseArgs(argv) {
     // null = unlimited nesting; 0 disables subagents.
     maxSubagentDepth: null,
     maxSubagentDepthSet: false,
+    // How long agents ride out a provider/control-plane outage (backoff).
+    retryBudgetMs: 8 * 3600e3,
+    // How strongly the main researcher is steered towards delegating goals.
+    delegation: "optional",
+    delegationSet: false,
     researcherContextWindow: null,
     advisorContextWindow: null,
     researcherMaxTokens: null,
@@ -116,6 +121,15 @@ function parseArgs(argv) {
       case "--no-open": args.open = false; break;
       case "--no-model-discovery": args.discoverModels = false; break;
       case "--skip-skills": args.skipSkills = true; args.skipSkillsSet = true; break;
+      case "--provider-retry-budget": args.retryBudgetMs = parseDuration(next(), a); break;
+      case "--delegation": {
+        args.delegation = next();
+        args.delegationSet = true;
+        if (!["optional", "encouraged"].includes(args.delegation)) {
+          throw new Error(`--delegation must be 'optional' or 'encouraged', got ${args.delegation}`);
+        }
+        break;
+      }
       case "--max-subagent-depth": {
         const v = next();
         args.maxSubagentDepth = v === "unlimited" ? null : Number(v);
@@ -140,6 +154,10 @@ function parseArgs(argv) {
             "  --local | --docker | --faux",
             "  --no-open  --no-model-discovery  --skip-skills",
             "  --max-subagent-depth N   limit subagent nesting (0 = no subagents; default unlimited)",
+            "  --provider-retry-budget D  keep retrying a provider/control-plane outage with",
+            "                exponential backoff for this long (e.g. 8h, 30m; 0 = no retries; default 8h)",
+            "  --delegation optional|encouraged  steer the main researcher towards delegating",
+            "                goals to subagents (supervisor mode); default optional",
             "  --researcher-context-window N  --advisor-context-window N",
             "  --researcher-max-tokens N      --advisor-max-tokens N",
             "  --max-handoffs N  --wallclock-ms N  --max-turns-per-phase N",
@@ -172,6 +190,16 @@ function parseArgs(argv) {
     process.exit(2);
   }
   return args;
+}
+
+/** "8h" / "30m" / "45s" / "1500ms" / "0" -> milliseconds. */
+function parseDuration(value, flag) {
+  const m = /^(\d+(?:\.\d+)?)\s*(ms|s|m|h)?$/.exec(String(value).trim());
+  if (!m || (!m[2] && Number(m[1]) !== 0)) {
+    throw new Error(`${flag} expects a duration such as 8h, 30m, 45s or 0, got ${value}`);
+  }
+  const factor = { ms: 1, s: 1e3, m: 60e3, h: 3600e3 }[m[2] || "ms"];
+  return Math.round(Number(m[1]) * factor);
 }
 
 function timestampId() {
@@ -229,6 +257,7 @@ function readRunMeta(runDir) {
     advisorModel: meta.advisorModel || run.advisorModel || null,
     skipSkills: Boolean(meta.skipSkills ?? run.skipSkills ?? start.skipSkills),
     maxSubagentDepth: run.maxSubagentDepth ?? meta.maxSubagentDepth ?? null,
+    delegation: run.delegation || meta.delegation || null,
     label: meta.label || run.label || "",
     state: meta.state || null,
     uiUrl: meta.uiUrl || "",
@@ -279,6 +308,8 @@ function fauxScenario() {
             title: "Survey the problem",
             plan: ["Delegate a background survey to a subagent", "Write notes"],
             acceptanceCriteria: ["notes.md exists", "summarizes the problem"],
+            execution: "subagent",
+            executionRationale: "The survey is self-contained.",
           },
           { "GOALS.md": "# Research task\nDemo\n\n## Goals\n### G1 — Survey the problem [status: in_progress]\n### G2 — Draft an approach [status: proposed]\n" },
         ),
@@ -552,6 +583,7 @@ async function main() {
     }
     if (!args.skipSkillsSet && runMeta.skipSkills) args.skipSkills = true;
     if (!args.maxSubagentDepthSet) args.maxSubagentDepth = runMeta.maxSubagentDepth ?? null;
+    if (!args.delegationSet && runMeta.delegation) args.delegation = runMeta.delegation;
     if ((resumed && !runMeta.researcherModel) || (resumed && !runMeta.advisorModel)) {
       console.warn(
         "[research-loop] warning: models of the original run are unknown; using " +
@@ -713,6 +745,7 @@ async function main() {
         advisorModel: args.advisorModel,
         skipSkills: args.skipSkills,
         maxSubagentDepth: args.maxSubagentDepth,
+        delegation: args.delegation,
       },
       null,
       2,
@@ -738,9 +771,11 @@ async function main() {
     initialAgents: replay?.agents || null,
     initialActiveId: replay?.activeId || null,
     initialRootPendingProposal: replay?.rootPendingProposal || null,
+    initialRootLastPlanExecution: replay?.rootLastPlanExecution || null,
     researcherSandbox,
     agentsDir,
     maxSubagentDepth: args.maxSubagentDepth,
+    delegation: args.delegation,
   });
   console.log(`[research-loop] session ${sessionId}${resumed ? " (resumed)" : ""}`);
   console.log(`[research-loop] UI: ${control.url}`);
@@ -788,6 +823,8 @@ async function main() {
     phaseTimeoutMs: args.phaseTimeoutMs,
     skipSkills: args.skipSkills,
     maxSubagentDepth: args.maxSubagentDepth,
+    delegation: args.delegation,
+    retryBudgetMs: args.retryBudgetMs,
   };
 
   const localBrokerUrl = `http://${localConnectHost(args.host)}:${control.port}`;
@@ -968,6 +1005,13 @@ async function main() {
       // still thinking keeps its process/container alive, so exit (even with
       // code 0, e.g. after an external SIGTERM) means it is gone for good.
       child.on("close", (code, signal) => {
+        // Agents exit on their own once the session is done; that is not a failure.
+        if (control.broker.snapshot().state === STATES.DONE) {
+          control.broker.complete();
+          clearInterval(timer);
+          resolve(control.broker.snapshot());
+          return;
+        }
         if (!control.broker.isClosed()) {
           const role = name.includes("researcher")
             ? "researcher"
@@ -1013,6 +1057,7 @@ async function main() {
     advisorModel: args.advisorModel,
     skipSkills: args.skipSkills,
     maxSubagentDepth: args.maxSubagentDepth,
+    delegation: args.delegation,
     token,
     state: control.broker.snapshot(),
     agentStats: agentEvents,
