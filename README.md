@@ -285,6 +285,8 @@ docker build -f Dockerfile.agent \
   --build-arg INSTALL_RUST=1 \
   --build-arg INSTALL_UV=1 \
   --build-arg INSTALL_LATEX=1 \
+  --build-arg INSTALL_NODE=1 \
+  --build-arg INSTALL_PLAYWRIGHT=1 \
   -t research-loop-agent-toolbox:latest .
 ```
 
@@ -295,6 +297,8 @@ Each arg is an independent opt-in (default `0`); combine the ones you want:
 | `INSTALL_RUST` | `0` | Rust toolchain via rustup (stable, minimal) — `rustc`/`cargo` on PATH, tools under `/opt/rustup` + `/opt/cargo` |
 | `INSTALL_UV` | `0` | `uv` (Python toolchain manager) in the agent's home, plus pre-installed CPython 3.11 and 3.12 so `uv venv`/`uv run` don't re-download them |
 | `INSTALL_LATEX` | `0` | light TeX Live toolbox: `pdflatex`, common formats/fonts, TikZ/pgf (`texlive-pictures`), and `latexmk` |
+| `INSTALL_NODE` | `0` | `nvm` under `/opt/nvm` plus the latest Node.js LTS as default — agent shells get the LTS `node`/`npm` (the harness itself stays on the base Node.js 22); pin nvm with `--build-arg NVM_VERSION=…` |
+| `INSTALL_PLAYWRIGHT` | `0` | global `playwright` CLI plus Chromium and its native libraries, baked into `/ms-playwright`; `PLAYWRIGHT_VERSION` is exported so projects can `npm i playwright@$PLAYWRIGHT_VERSION` and reuse the browser |
 
 Then point your runs at it with `--image`:
 
@@ -308,7 +312,7 @@ node orchestrator/run.mjs --task "..." \
 The image is used for **both** roles (researcher and advisor). Everything is
 installed under directories owned by the non-root `agent` user and stays on
 PATH for its login shells and `sudo`, so agents can still install anything extra
-per task (and can even update the bundled Rust/uv at runtime).
+per task (and can even update the bundled Rust/uv/Node.js at runtime).
 
 ### Orchestrator flags
 

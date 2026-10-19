@@ -12,7 +12,7 @@ if [ -n "${HOST_UID:-}" ] && [ -n "${HOST_GID:-}" ] && [ -x /usr/bin/setpriv ]; 
   for d in /sandbox /transcripts /agent-run; do
     chown agent:agent "$d" >/dev/null 2>&1 || true
   done
-  chown -R agent:agent /opt/rustup /opt/cargo >/dev/null 2>&1 || true
+  chown -R agent:agent /opt/rustup /opt/cargo /opt/nvm >/dev/null 2>&1 || true
   exec setpriv --reuid=agent --regid=agent --init-groups -- \
     /usr/bin/env HOME=/home/agent node /app/agent/main.mjs
 fi

@@ -11,6 +11,8 @@
 #     --build-arg INSTALL_RUST=1 \
 #     --build-arg INSTALL_UV=1 \
 #     --build-arg INSTALL_LATEX=1 \
+#     --build-arg INSTALL_NODE=1 \
+#     --build-arg INSTALL_PLAYWRIGHT=1 \
 #     -t research-loop-agent-toolbox:latest .
 # Pass it to runs with `--image research-loop-agent-toolbox:latest`.
 
@@ -25,6 +27,8 @@ ENV DISABLE_TELEMETRY=1
 ARG INSTALL_RUST=0
 ARG INSTALL_UV=0
 ARG INSTALL_LATEX=0
+ARG INSTALL_NODE=0
+ARG INSTALL_PLAYWRIGHT=0
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -74,7 +78,7 @@ RUN groupmod -n agent node \
     && usermod -l agent -d /home/agent -m -g agent node \
     && echo 'agent ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/agent \
     && echo 'Defaults env_keep += "RUSTUP_HOME CARGO_HOME"' >> /etc/sudoers.d/agent \
-    && echo 'Defaults secure_path = /home/agent/.local/bin:/opt/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' >> /etc/sudoers.d/agent \
+    && echo 'Defaults secure_path = /home/agent/.local/bin:/opt/cargo/bin:/opt/nvm/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' >> /etc/sudoers.d/agent \
     && chmod 0440 /etc/sudoers.d/agent
 
 # Keep the baked tool dirs on PATH for login shells and `sudo` (which reset
@@ -84,6 +88,8 @@ RUN printf '%s\n' \
         'if [ -d "$HOME/.local/bin" ]; then export PATH="$HOME/.local/bin:$PATH"; fi' \
         'if [ -d /opt/rustup ]; then export RUSTUP_HOME=/opt/rustup; fi' \
         'if [ -d /opt/cargo ]; then export CARGO_HOME=/opt/cargo; fi' \
+        'if [ -s /opt/nvm/nvm.sh ]; then export NVM_DIR=/opt/nvm; . "$NVM_DIR/nvm.sh" --no-use; fi' \
+        'if [ -d /opt/nvm/current/bin ]; then export PATH="/opt/nvm/current/bin:$PATH"; fi' \
         > /etc/profile.d/research-loop-tools.sh
 
 # Optional: Rust toolchain (rustup, stable) under /opt. Chowned to `agent` so
@@ -109,13 +115,44 @@ RUN if [ "$INSTALL_UV" = "1" ]; then \
     fi
 ENV PATH="/home/agent/.local/bin:${PATH}"
 
+# Optional: nvm (Node Version Manager) under /opt/nvm, plus the latest Node.js
+# LTS as its default. Agent login shells get that LTS `node`/`npm` first on PATH
+# (via the /opt/nvm/current symlink) and can `nvm install`/`nvm use` others; the
+# harness itself keeps running on the base image's Node.js 22. Owned by `agent`
+# so nvm can install further versions at runtime.
+ARG NVM_VERSION=v0.40.8
+RUN if [ "$INSTALL_NODE" = "1" ]; then \
+        mkdir -p /opt/nvm \
+        && curl -fsSL "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh" | \
+            NVM_DIR=/opt/nvm PROFILE=/dev/null bash \
+        && bash -c '. /opt/nvm/nvm.sh \
+            && nvm install --lts --default \
+            && ln -sfn "$(dirname "$(dirname "$(nvm which default)")")" /opt/nvm/current \
+            && nvm cache clear' \
+        && chown -R agent:agent /opt/nvm; \
+    fi
+
+# Optional: Playwright with Chromium pre-downloaded into $PLAYWRIGHT_BROWSERS_PATH
+# and its native libraries apt-installed (`--with-deps`). The `playwright` CLI is
+# installed globally (under the nvm LTS Node.js when INSTALL_NODE=1) and its
+# version is exported as PLAYWRIGHT_VERSION, so projects can
+# `npm i playwright@$PLAYWRIGHT_VERSION` and reuse the baked browser.
+RUN if [ "$INSTALL_PLAYWRIGHT" = "1" ]; then \
+        bash -lc 'npm install -g playwright@latest \
+            && playwright install --with-deps chromium \
+            && echo "export PLAYWRIGHT_VERSION=$(playwright --version | awk "{print \$2}")" \
+                > /etc/profile.d/research-loop-playwright.sh' \
+        && rm -rf /var/lib/apt/lists/* /home/agent/.npm \
+        && chmod -R a+rX "$PLAYWRIGHT_BROWSERS_PATH"; \
+    fi
+
 WORKDIR /app
 
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
 # skills.sh CLI for the install_skill tool (agents install skills at runtime).
-RUN npm install -g skills@latest
+RUN npm install -g skills@latest && rm -rf /home/agent/.npm
 
 COPY agent/ ./agent/
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
