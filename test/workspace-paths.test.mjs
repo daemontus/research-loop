@@ -6,7 +6,7 @@ import test from "node:test";
 
 import {
   listReadableDir,
-  readReadableFile,
+  readReadableLines,
   resolveReadablePath,
 } from "../agent/lib/workspace-paths.mjs";
 
@@ -54,11 +54,11 @@ test("list_dir and read_file work for config and prefetch roots", () => {
   assert.match(listed, /si\.pdf/);
 
   assert.equal(
-    readReadableFile(sandbox, configRoot, prefetchRoot, "/config/skills/SKILL.md"),
-    "# skill\n",
+    readReadableLines(sandbox, configRoot, prefetchRoot, "/config/skills/SKILL.md"),
+    "1\t# skill",
   );
   assert.match(
-    readReadableFile(
+    readReadableLines(
       sandbox,
       configRoot,
       prefetchRoot,
@@ -67,13 +67,13 @@ test("list_dir and read_file work for config and prefetch roots", () => {
     /binary prefetch file/,
   );
   assert.equal(
-    readReadableFile(
+    readReadableLines(
       sandbox,
       configRoot,
       prefetchRoot,
       path.join(prefetchRoot, "manual", "notes.txt"),
     ),
-    "si here\n",
+    "1\tsi here",
   );
 });
 

@@ -519,7 +519,8 @@ agent/
     control-tools.mjs      # submit_plan / accept_result / ...
     protocol.mjs           # envelopes, kinds, rendering, validation
     model-providers.mjs    # providers, auth, model resolution
-    tools.mjs              # bash / read_file / write_file / edit_file / ...
+    tools.mjs              # bash / read_file (line ranges) / grep / write_file / edit_file / ...
+    grep.mjs               # grep tool backend (ripgrep, with a built-in fallback)
     prompts.mjs            # role system prompts
     transcript.mjs         # JSONL transcript writer
     abort-retry.mjs        # aborted/429 retry (from pi-retrieve)

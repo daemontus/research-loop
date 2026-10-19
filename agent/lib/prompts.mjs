@@ -20,6 +20,12 @@ Rules: ids are stable (G1, G1.1, G2...). Update the status marker whenever it ch
 Add new goals/subgoals as sections rather than rewriting history. Record why a goal is
 abandoned.`;
 
+const FILE_TOOLS_NOTE = [
+  "For files, prefer the dedicated tools over bash: grep to find code or text (path:line),",
+  "read_file with offset/limit to read just the lines you need (output is line-numbered), and",
+  "edit_file for targeted changes. Keep bash for running programs, builds, tests and git.",
+].join("\n");
+
 function workspaceSection(role) {
   if (role === "researcher") {
     return [
@@ -32,6 +38,7 @@ function workspaceSection(role) {
       "this task — inspect it before you start.",
       "Read-only config (skills, TOOLS.md): /config.",
       "You do NOT have access to the advisor's sandbox.",
+      FILE_TOOLS_NOTE,
     ].join("\n");
   }
   return [
@@ -42,6 +49,7 @@ function workspaceSection(role) {
     "the code, and the result artifacts live).",
     "Read-only config (skills, TOOLS.md): /config.",
     "You cannot modify the researcher's workspace.",
+    FILE_TOOLS_NOTE,
   ].join("\n");
 }
 

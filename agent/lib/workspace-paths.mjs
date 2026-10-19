@@ -1,5 +1,5 @@
 /**
- * Resolve readable paths for list_dir / read_file.
+ * Resolve readable paths for list_dir / read_file / grep.
  *
  * Readable roots:
  *   - the writable sandbox (agent's own workspace)
@@ -90,20 +90,37 @@ export function listReadableDir(sandbox, configDir, prefetchRoot, p, extraRoots 
     .join("\n");
 }
 
-export function readReadableFile(
+/** Files above this size are not read at all (use bash to slice them). */
+const MAX_READ_BYTES = 50 * 1024 * 1024;
+export const DEFAULT_READ_LINES = 2000;
+/** Longer lines are shortened in read output (minified JS, CSV blobs, ...). */
+export const MAX_READ_LINE_CHARS = 2000;
+
+/**
+ * Read a range of lines from a readable file, numbered like `cat -n`
+ * (`<line>\t<text>`). The output never exceeds `maxChars`: it stops at a
+ * line boundary and says which `offset` continues the read, so a partial
+ * read is never silent.
+ *
+ * @param {object} [range]
+ * @param {number} [range.offset] 1-based first line (default 1)
+ * @param {number} [range.limit] max number of lines (default DEFAULT_READ_LINES)
+ * @param {number} [range.maxChars] output budget (default 40000)
+ */
+export function readReadableLines(
   sandbox,
   configDir,
   prefetchRoot,
   p,
-  maxBytes,
+  { offset = 1, limit = DEFAULT_READ_LINES, maxChars = 40000 } = {},
   extraRoots = [],
 ) {
   const { abs, kind } = resolveReadablePath(sandbox, configDir, prefetchRoot, p, extraRoots);
   if (!fs.existsSync(abs)) throw new Error(`no such file: ${p}`);
   if (!fs.statSync(abs).isFile()) throw new Error(`not a file: ${p}`);
   const size = fs.statSync(abs).size;
-  if (size > 5 * 1024 * 1024) {
-    return `[file too large to read; size=${size} bytes; use bash to inspect]`;
+  if (size > MAX_READ_BYTES) {
+    return `[file too large to read (${size} bytes); use bash (head/tail/sed -n) to inspect it]`;
   }
   if (kind === "prefetch") {
     const ext = path.extname(abs).toLowerCase();
@@ -111,6 +128,41 @@ export function readReadableFile(
       return `[binary prefetch file (${ext}, ${size} bytes); copy to /sandbox and use pdftotext/unzip/file]`;
     }
   }
-  const text = fs.readFileSync(abs, "utf8").slice(0, maxBytes ?? 200_000);
-  return text || "(empty file)";
+  const buf = fs.readFileSync(abs);
+  if (buf.subarray(0, 8192).includes(0)) {
+    return `[binary file (${size} bytes); use bash (file, xxd, strings, ...) to inspect it]`;
+  }
+  const text = buf.toString("utf8");
+  if (!text) return "(empty file)";
+  const lines = text.split("\n");
+  // A trailing newline does not start another line.
+  if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+  const total = lines.length;
+
+  const start = Math.max(1, Math.floor(Number(offset) || 1));
+  const count = Math.max(1, Math.floor(Number(limit) || DEFAULT_READ_LINES));
+  if (start > total) {
+    return `[${p} has ${total} line${total === 1 ? "" : "s"}; offset ${start} is past the end]`;
+  }
+  const end = Math.min(total, start + count - 1);
+  const width = String(end).length;
+  const out = [];
+  let used = 0;
+  let last = start - 1;
+  for (let n = start; n <= end; n += 1) {
+    let line = lines[n - 1].replace(/\r$/, "");
+    if (line.length > MAX_READ_LINE_CHARS) {
+      line = `${line.slice(0, MAX_READ_LINE_CHARS)}… [line truncated; ${line.length} chars]`;
+    }
+    const row = `${String(n).padStart(width)}\t${line}`;
+    // Always show at least one line; otherwise stay within the budget.
+    if (out.length && used + row.length + 1 > maxChars) break;
+    out.push(row);
+    used += row.length + 1;
+    last = n;
+  }
+  if (start === 1 && last === total) return out.join("\n");
+  const more = last < total ? `; continue with offset=${last + 1}` : "";
+  out.push(`[lines ${start}-${last} of ${total}${more}]`);
+  return out.join("\n");
 }
