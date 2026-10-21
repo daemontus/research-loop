@@ -244,6 +244,7 @@
       .ov-item .ov-who { font: 800 12px var(--toon); }
       .ov-item .ov-label { display: block; font-size: 12px; margin-top: 2px; }
       .ov-item .ov-goal { color: var(--muted); }
+      .ov-item.warn { border-color: var(--err); background: #fff0ee; }
       .ov-section { margin-bottom: 8px; }
       .ov-head {
         display: flex; align-items: center; gap: 6px; width: 100%; padding: 5px 4px; margin: 0 0 4px;
@@ -289,6 +290,33 @@
       #goals a { color: var(--denim); }
       #goals blockquote { margin: 6px 0; padding: 2px 10px; border-left: 4px solid var(--researcher); color: var(--muted); }
       #goals hr { border: none; border-top: 2px dashed var(--soft-border); margin: 12px 0; }
+      #goals h4.goals-head { font: 800 12px var(--toon); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 2px 0 6px; }
+      .goal-row { margin: 0 0 4px; }
+      .goal-row > summary {
+        display: flex; align-items: center; gap: 6px; list-style: none; cursor: pointer; padding: 3px 6px;
+        border-radius: 8px; font: 700 12px var(--toon); color: var(--text);
+      }
+      .goal-row > summary::-webkit-details-marker { display: none; }
+      .goal-row > summary:hover { background: var(--panel2); }
+      .goal-row.mine > summary { background: var(--researcher-soft); box-shadow: inset 3px 0 0 var(--researcher); }
+      .goal-row .g-id { flex: none; }
+      .goal-row .g-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+      .goal-row .g-child { flex: none; font-size: 10px; color: var(--muted); }
+      .goal-row .g-body { margin: 4px 0 8px 10px; padding: 6px 10px; border-left: 3px solid var(--soft-border); font-size: 12px; }
+      .goal-row .g-body h5 { font: 800 11px var(--toon); text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 8px 0 2px; }
+      .g-status {
+        flex: none; font: 700 10px var(--toon); padding: 0 7px; border-radius: 999px;
+        border: 1.5px solid var(--ink); background: #fff; white-space: nowrap;
+      }
+      .g-status.done { background: #9be7b4; }
+      .g-status.in_progress { background: #bcdcff; }
+      .g-status.aborted { background: #ffb3a8; }
+      .agent-node .an-kind {
+        flex: none; font: 700 9px var(--toon); text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
+        border: 1px solid var(--soft-border); border-radius: 999px; padding: 0 5px; background: #fff;
+      }
+      #approval-detail { margin: 8px 0 0; padding: 6px 10px; background: #fff; border: 2px solid var(--ink); border-radius: 10px; font-size: 13px; max-height: 14em; overflow-y: auto; }
+      #approval-detail:empty { display: none; }
       .entry { margin: 0 0 16px; }
       .entry .meta { font-size: 11px; color: var(--muted); margin-bottom: 5px; padding-left: 6px; display: flex; gap: 8px; align-items: center; white-space: nowrap; }
       /* One line: the speech tail hangs below the name, so the meta must not wrap. */
@@ -492,15 +520,16 @@
         <div id="pane-scroll">
           <div id="agent-info"></div>
           <div id="task"><div class="muted-note">(loading…)</div></div>
-          <div id="goals"><div class="muted-note">(not yet written)</div></div>
+          <div id="goals"><div class="muted-note">(no plan yet)</div></div>
         </div>
         <div id="approval">
-          <div class="row"><b><i class="hat pat"></i><i class="hat mat"></i>A je to? Pat &amp; Mat think the task is done. Your call.</b></div>
+          <div class="row"><b><i class="hat pat"></i><i class="hat mat"></i><span id="approval-title">A je to? Pat &amp; Mat think the task is done. Your call.</span></b></div>
+          <div id="approval-detail" class="md"></div>
           <textarea id="approval-note" placeholder="Optional note to the agents…"></textarea>
           <div class="row">
-            <button class="primary" onclick="humanDecision('approve')">A je to! (approve)</button>
-            <button onclick="humanDecision('extend')">Extend budget</button>
-            <button class="danger" onclick="humanDecision('reject')">Not quite, keep working</button>
+            <button class="primary" id="approve-btn" onclick="humanDecision('approve')">A je to! (approve)</button>
+            <button id="extend-btn" onclick="humanDecision('extend')">Extend budget</button>
+            <button class="danger" id="reject-btn" onclick="humanDecision('reject')">Not quite, keep working</button>
           </div>
         </div>
         <div class="composer">
@@ -581,13 +610,14 @@
       let allEntries = [];
       let agentsById = new Map();
       const agentOf = (entry) => entry.agentId || ROOT;
-      /** Entries shown in an agent's view: its own, plus its children's start/finish. */
+      /** Entries shown in a session's view: its own, plus its children's start/end. */
       function entryVisibleFor(entry, id) {
         if (agentOf(entry) === id) return true;
-        return (entry.kind === "subagent_start" || entry.kind === "subagent_done") && entry.parentId === id;
+        return (entry.kind === "session_started" || entry.kind === "session_ended") && entry.session?.parentId === id;
       }
       function agentLabel(id) {
         if (id === ROOT) return "main";
+        if (id === "skills") return "skills";
         const a = agentsById.get(id);
         return a?.title ? `${id} · ${a.title}` : id;
       }
@@ -829,10 +859,15 @@
         for (const [k, label] of [
           ["title", "Title"],
           ["summary", "Summary"],
+          ["reason", "Reason"],
           ["feedback", "Feedback"],
+          ["assessment", "Assessment"],
           ["rationale", "Rationale"],
+          ["justification", "Justification"],
           ["instructions", "Instructions"],
-          ["executionRationale", "Execution rationale"],
+          ["report", "Report"],
+          ["notes", "Notes for later agents"],
+          ["proposal", "Proposal"],
         ]) {
           if (typeof payload[k] === "string" && payload[k].trim()) {
             parts.push(`<div class="field"><span class="k">${label}</span><div class="md">${renderMarkdown(payload[k], true)}</div></div>`);
@@ -858,13 +893,30 @@
             handled.add(k);
           }
         }
-        if (Array.isArray(payload.subgoals) && payload.subgoals.length) {
+        for (const [k, label] of [
+          ["goals", "Goals"],
+          ["subgoals", "Subgoals"],
+        ]) {
+          if (!Array.isArray(payload[k])) continue;
+          handled.add(k);
+          if (!payload[k].length) {
+            parts.push(`<div class="field"><span class="k">${label}</span><div class="v">(none)</div></div>`);
+            continue;
+          }
           parts.push(
-            `<div class="field"><span class="k">Subgoals</span>${list(
-              payload.subgoals.map((s) => `${s.goalId || "?"} — ${s.title || ""}`),
-            )}</div>`,
+            `<div class="field"><span class="k">${label}</span>` +
+              payload[k]
+                .map(
+                  (g) =>
+                    `<details class="nested"><summary><b>${esc(g.id || "?")}</b> — ${esc(g.title || "")}</summary>` +
+                    `<div class="md">${renderMarkdown(g.description || "")}</div>` +
+                    (g.acceptance?.length ? `<div class="field"><span class="k">Acceptance</span>${list(g.acceptance)}</div>` : "") +
+                    (g.skills?.length ? `<div class="kv"><span class="k">skills</span>${esc(g.skills.join(", "))}</div>` : "") +
+                    `</details>`,
+                )
+                .join("") +
+              `</div>`,
           );
-          handled.add("subgoals");
         }
         const rest = Object.entries(payload).filter(
           ([k, v]) => !handled.has(k) && v !== undefined && v !== null && v !== "",
@@ -1042,37 +1094,40 @@
 
       // --- compact overview of high-level phases ----------------------------
       const HANDOFF_LABELS = {
-        skills_proposal: "proposed skills",
-        skills_ready: "installed skills",
-        skills_approved: "approved skills",
-        skills_changes: "requested skill changes",
-        proposal: "proposed a plan",
-        result: "submitted a result",
-        task_request: "requested task completion",
-        plan_approved: "approved the plan",
-        plan_changes: "requested plan changes",
-        result_accepted: "accepted result (goal met)",
-        result_changes: "requested result changes",
-        task_accepted: "accepted task completion",
-        task_changes: "requested task changes",
-        subagent_proposal: "proposed a subagent",
-        subagent_approved: "approved the subagent",
-        subagent_changes: "rejected the subagent",
+        propose_skills: "proposed skills",
+        approve_skills: "approved the skills",
+        request_skill_changes: "requested skill changes",
+        propose_plan: "proposed the plan",
+        accept_plan: "accepted the plan",
+        request_plan_changes: "requested plan changes",
+        propose_subagent: "proposed a subagent",
+        approve_subagent: "approved the subagent",
+        reject_subagent: "rejected the subagent",
+        proceed: "proceeds to the next goal",
+        propose_plan_change: "proposed a plan change",
+        approve_plan_change: "approved the plan change",
+        reject_plan_change: "rejected the plan change",
+        finish_session: "finished the session",
+        abort_session: "aborted the session",
+        accept_completion: "final check: goal met",
+        reject_completion: "final check: goal not met",
+        submit_result: "submitted a result",
+        request_result_changes: "requested result changes",
+        accept_result: "accepted the result (goal met)",
+        request_abort: "asked to abort",
+        confirm_abort: "confirmed the abort",
+        reject_abort: "rejected the abort",
       };
 
-      // Overview items are grouped into chronological sections: setup (start,
-      // skills), one per goal (with its title and live status), and task
-      // completion. A revisited goal opens a new section with the same header.
-      const COMPLETION_KINDS = new Set(["task_request", "task_accepted", "task_changes"]);
-      const GOAL_STATUS = {
-        proposal: ["planning", "review"],
-        plan_changes: ["plan changes requested", "changes"],
-        plan_approved: ["in progress", "progress"],
-        result: ["result in review", "review"],
-        result_changes: ["changes requested", "changes"],
-        result_accepted: ["done", "done"],
-      };
-      let goalInfo = new Map(); // goalId -> { title, status: [label, cls], heads: [] }
+      // Overview items are grouped into chronological sections: setup (skills,
+      // planning), one per goal the session works on (title and status come from
+      // the harness's goal tree), and completion. A revisited goal opens a new
+      // section with the same header.
+      const SETUP_KINDS = new Set(["propose_skills", "approve_skills", "request_skill_changes", "propose_plan", "accept_plan", "request_plan_changes"]);
+      const COMPLETION_KINDS = new Set(["finish_session", "abort_session", "accept_completion", "reject_completion"]);
+      const GOAL_STATUS_LABEL = { planned: "planned", in_progress: "in progress", done: "done", aborted: "aborted" };
+      let goalsById = new Map(); // goalId -> goal (from /api/goals)
+      let goalInfo = new Map(); // goalId -> { heads: [] } (overview section headers)
       let ovSection = null; // { key, items }
 
       function resetOverview() {
@@ -1083,24 +1138,38 @@
         updateOverviewProgress();
       }
 
-      function updateOverviewProgress() {
-        const goals = [...goalInfo.values()];
-        const done = goals.filter((g) => g.status?.[1] === "done").length;
-        document.getElementById("ov-progress").textContent = goals.length
-          ? `· ${done}/${goals.length} goals done`
-          : "";
+      /** Goals the selected session works through (main: the plan; orchestrator: its subgoals; leaf: its goal). */
+      function goalsOfSelected() {
+        const a = agentsById.get(selectedAgent);
+        const all = [...goalsById.values()];
+        if (!a || a.kind === "main") return all.filter((g) => g.owner === ROOT);
+        if (a.kind === "orchestrator") return all.filter((g) => g.owner === a.id);
+        if (a.kind === "leaf") return all.filter((g) => g.id === a.goalId);
+        return [];
       }
 
+      function updateOverviewProgress() {
+        const goals = goalsOfSelected();
+        const done = goals.filter((g) => g.status === "done").length;
+        document.getElementById("ov-progress").textContent = goals.length > 1 ? `· ${done}/${goals.length} goals done` : "";
+      }
+
+      const STATUS_CLASS = { done: "done", in_progress: "progress", aborted: "changes", planned: "" };
       function renderGoalHead(goalId, head) {
-        const g = goalInfo.get(goalId);
-        head.querySelector(".ov-title").textContent = g.title ? `${goalId} · ${g.title}` : goalId;
+        const g = goalsById.get(goalId);
+        head.querySelector(".ov-title").textContent = g?.title ? `${goalId} · ${g.title}` : goalId;
         head.querySelector(".ov-title").title = head.querySelector(".ov-title").textContent;
         const pill = head.querySelector(".ov-status");
-        pill.hidden = !g.status;
-        if (g.status) {
-          pill.textContent = g.status[0];
-          pill.className = `ov-status ${g.status[1]}`;
+        pill.hidden = !g?.status;
+        if (g?.status) {
+          pill.textContent = GOAL_STATUS_LABEL[g.status] || g.status;
+          pill.className = `ov-status ${STATUS_CLASS[g.status] || ""}`;
         }
+      }
+
+      function refreshGoalHeads() {
+        for (const [goalId, info] of goalInfo) for (const head of info.heads) renderGoalHead(goalId, head);
+        updateOverviewProgress();
       }
 
       function overviewSection(key, goalId) {
@@ -1117,6 +1186,7 @@
         section.append(head, items);
         overview.appendChild(section);
         if (goalId) {
+          if (!goalInfo.has(goalId)) goalInfo.set(goalId, { heads: [] });
           goalInfo.get(goalId).heads.push(head);
           renderGoalHead(goalId, head);
         } else {
@@ -1129,22 +1199,26 @@
       function addOverview(entry, target) {
         let who = entry.agent || "control";
         let label = null;
-        const goalId = entry.goalId || null;
+        let goalId = entry.goalId || null;
         let sectionKind = null; // "setup" | "completion" | null (goal / current)
         if (entry.kind === "handoff" && entry.direction === "out") {
           label = HANDOFF_LABELS[entry.handoffKind] || entry.handoffKind || "handoff";
-          if (String(entry.handoffKind).startsWith("skills_")) sectionKind = "setup";
+          if (SETUP_KINDS.has(entry.handoffKind)) sectionKind = "setup";
           if (COMPLETION_KINDS.has(entry.handoffKind)) sectionKind = "completion";
         } else if (entry.kind === "start") {
           who = "control";
-          label = "session started";
+          label = "run started";
           sectionKind = "setup";
         } else if (entry.kind === "human_message") {
           who = "human";
-          label = "human message";
+          label = entry.deferred ? "human note (waits for its turn)" : "human message";
         } else if (entry.kind === "human_decision") {
           who = "human";
           label = `human: ${entry.action || "decision"}`;
+          sectionKind = "completion";
+        } else if (entry.kind === "awaiting_human") {
+          who = "control";
+          label = entry.request?.type === "abort" ? "abort awaits the human" : "completion awaits the human";
           sectionKind = "completion";
         } else if (entry.kind === "terminal") {
           who = "control";
@@ -1154,41 +1228,49 @@
           who = "control";
           label = `aborted: ${entry.reason || ""}`;
           sectionKind = "completion";
-        } else if (entry.kind === "subagent_start") {
+        } else if (entry.kind === "session_started") {
           who = "control";
-          label = agentOf(entry) === selectedAgent
-            ? `subagent started: ${entry.meta?.title || ""}`
-            : `started subagent ${agentOf(entry)}: ${entry.meta?.title || ""}`;
-        } else if (entry.kind === "subagent_done") {
+          const s = entry.session || {};
+          goalId = s.goalId || null;
+          label = agentOf(entry) === selectedAgent ? `session started (${s.kind || ""})` : `started ${s.kind || "subagent"} ${s.id}`;
+          if (!goalId) sectionKind = "setup";
+        } else if (entry.kind === "session_ended") {
           who = "control";
-          label = agentOf(entry) === selectedAgent ? "subagent finished (report sent)" : `subagent ${agentOf(entry)} reported back`;
-        } else if (entry.kind === "protected_restored") {
+          const s = entry.session || {};
+          goalId = s.goalId || null;
+          const how = s.state === "DONE" ? "finished" : "aborted";
+          label = agentOf(entry) === selectedAgent ? `session ${how}` : `${s.id} ${how}`;
+          if (!goalId) sectionKind = "setup";
+        } else if (entry.kind === "plan_version") {
           who = "control";
-          label = "protected goals restored";
+          label = `plan v${entry.version} registered (${(entry.goals || []).length} goals)`;
+          sectionKind = entry.version === 1 ? "setup" : null;
+        } else if (entry.kind === "reject") {
+          // Out-of-turn duplicates are harmless and only counted, not listed.
+          if (entry.outOfTurn) return;
+          who = entry.from || "control";
+          label = `⚠ handoff rejected: ${String(entry.error || "").slice(0, 140)}`;
+        } else if (entry.kind === "register_refused" || entry.kind === "register_warning") {
+          who = "control";
+          label = `⚠ ${entry.kind === "register_refused" ? "agent refused" : "stale agent image"}: ${entry.from || ""}`;
+          sectionKind = "setup";
         }
         if (label === null) return;
 
-        // Track goal title/status from the researcher's and advisor's handoffs.
-        const isGoalItem = goalId && !sectionKind;
-        if (isGoalItem) {
-          if (!goalInfo.has(goalId)) goalInfo.set(goalId, { title: "", status: null, heads: [] });
-          const g = goalInfo.get(goalId);
-          if (entry.handoffKind === "proposal" && entry.payload?.title) g.title = String(entry.payload.title);
-          if (GOAL_STATUS[entry.handoffKind]) g.status = GOAL_STATUS[entry.handoffKind];
-        }
+        // A child session's own entries belong to its goal.
+        const sel = agentsById.get(selectedAgent);
+        if (!goalId && !sectionKind && sel?.goalId && !ovSection) goalId = sel.goalId;
+        const isGoalItem = Boolean(goalId) && !sectionKind;
         const items = isGoalItem
           ? overviewSection(`goal:${goalId}`, goalId)
           : sectionKind
             ? overviewSection(sectionKind, null)
             : ovSection?.items || overviewSection("setup", null);
-        if (isGoalItem) {
-          for (const head of goalInfo.get(goalId).heads) renderGoalHead(goalId, head);
-          updateOverviewProgress();
-        }
+        if (isGoalItem) updateOverviewProgress();
 
         const el = document.createElement("button");
         el.type = "button";
-        el.className = `ov-item ${who}`;
+        el.className = `ov-item ${who}${label.startsWith("⚠") ? " warn" : ""}`;
         // Inside its own goal section the goal id would be redundant.
         const goalTag = goalId && !isGoalItem ? ` <span class="ov-goal">${esc(goalId)}</span>` : "";
         el.innerHTML =
@@ -1240,19 +1322,6 @@
             recordUsage(entry.agent, entry.usage);
           }
         }
-        // Task fallback: sessions whose control plane predates the /api/task
-        // endpoint still carry the task inside the opening user message.
-        if (
-          agentOf(entry) === ROOT &&
-          entry.kind === "message" &&
-          entry.role === "user" &&
-          typeof entry.content === "string" &&
-          entry.content.includes("## Broad research task") &&
-          !fallbackTask
-        ) {
-          fallbackTask = extractTask(entry.content);
-          if (fallbackTask) refreshTask();
-        }
         if (render && entryVisibleFor(entry, selectedAgent)) renderEntry(entry, scroll, bulk);
       }
 
@@ -1270,7 +1339,7 @@
           entry.kind === "message" &&
           entry.role === "user" &&
           typeof entry.content === "string" &&
-          entry.content.startsWith("[handoff from ")
+          (entry.content.startsWith("[handoff from ") || entry.content.startsWith("[message from the human"))
         ) {
           return;
         }
@@ -1339,35 +1408,45 @@
             `${entry.to ? " → " + esc(entry.to) : ""}`;
           const text = entry.text && entry.text.trim() ? `<div class="md">${renderMarkdown(entry.text, true)}</div>` : "";
           div.innerHTML = metaHtml("human", entry, `<span>${label}</span>`) + bubble(text);
-        } else if (entry.kind === "subagent_start" || entry.kind === "subagent_done") {
-          const id = agentOf(entry);
-          const started = entry.kind === "subagent_start";
+        } else if (entry.kind === "session_started" || entry.kind === "session_ended") {
+          const s = entry.session || {};
+          const id = s.id || agentOf(entry);
+          const started = entry.kind === "session_started";
+          const goal = entry.goal || null;
           let inner = "";
           if (started) {
-            inner += `<div class="field"><span class="k">Subtask</span><div class="v">${esc(entry.meta?.title || id)}</div></div>`;
-            if (entry.meta?.instructions) {
-              inner += `<div class="field"><span class="k">Instructions</span><div class="md">${renderMarkdown(entry.meta.instructions, true)}</div></div>`;
+            inner += `<div class="field"><span class="k">${esc(s.kind || "session")}${s.goalId ? ` for ${esc(s.goalId)}` : ""}</span><div class="v">${esc(s.title || id)}</div></div>`;
+            if (entry.info?.instructions) {
+              inner += `<div class="field"><span class="k">Instructions</span><div class="md">${renderMarkdown(entry.info.instructions, true)}</div></div>`;
             }
-            if (entry.meta?.conditions?.length) {
-              inner += `<div class="field"><span class="k">Conditions</span>${list(entry.meta.conditions)}</div>`;
+            if (entry.info?.conditions?.length) {
+              inner += `<div class="field"><span class="k">Conditions</span>${list(entry.info.conditions)}</div>`;
             }
-            if (entry.protectedFiles?.length) {
-              inner += `<div class="field"><span class="k">Protected goal files</span>${list(entry.protectedFiles)}</div>`;
-            }
-          } else {
-            inner += `<div class="field"><span class="k">Report</span><div class="md">${renderMarkdown(entry.report || "(empty)")}</div></div>`;
+          } else if (goal) {
+            inner += `<div class="field"><span class="k">Outcome</span><div class="v">${esc(goal.endReason || goal.status || "")}</div></div>`;
+            if (goal.report) inner += `<div class="field"><span class="k">Report</span><div class="md">${renderMarkdown(goal.report)}</div></div>`;
+            if (goal.notes) inner += `<div class="field"><span class="k">Notes</span><div class="md">${renderMarkdown(goal.notes)}</div></div>`;
+            if (goal.verdict) inner += `<div class="field"><span class="k">Verdict</span><div class="md">${renderMarkdown(goal.verdict)}</div></div>`;
           }
-          if (id !== selectedAgent) {
+          if (id !== selectedAgent && agentsById.has(id)) {
             inner += `<button class="open-agent" type="button" data-open-agent="${esc(id)}">open ${esc(id)} →</button>`;
           }
-          div.innerHTML =
-            metaHtml("control", entry, `<span>${started ? "subagent started" : "subagent finished"} · ${esc(id)}</span>`) +
-            bubble(inner);
-        } else if (entry.kind === "protected_restored") {
-          const body = `<div class="v">Restored from the start snapshot:</div>${list(entry.files || [])}`;
-          div.innerHTML = metaHtml("control", entry, "<span>protected goals restored</span>") + bubble(body);
+          const how = started ? "started" : s.state === "DONE" ? "finished" : `ended (${esc(s.state || "")})`;
+          div.innerHTML = metaHtml("control", entry, `<span>${esc(s.kind || "session")} ${esc(id)} ${how}</span>`) + bubble(inner);
+        } else if (entry.kind === "plan_version") {
+          const body = list((entry.goals || []).map((g) => `${g.id} — ${g.title}`));
+          div.innerHTML = metaHtml("control", entry, `<span>plan v${esc(entry.version)} of ${esc(entry.owner === ROOT ? "main" : entry.owner)}</span>`) + bubble(body);
+        } else if (entry.kind === "awaiting_human") {
+          const r = entry.request || {};
+          const text = r.type === "abort" ? `Abort requested: ${r.reason || ""}` : r.summary || "Completion requested.";
+          div.innerHTML = metaHtml("control", entry, "<span>awaiting the human</span>") + bubble(`<div class="md">${renderMarkdown(text)}</div>`);
+        } else if (entry.kind === "skills_installed") {
+          const inst = entry.payload?.installed || [];
+          const errs = entry.payload?.errors || [];
+          const body = list(inst.map((s) => `${s.name} → ${s.path || ""}`)) + (errs.length ? `<div class="err">failed: ${esc(errs.map((e) => e.source).join(", "))}</div>` : "");
+          div.innerHTML = metaHtml("control", entry, `<span>skills installed (${esc(entry.from || "")})</span>`) + bubble(body);
         } else if (
-          ["state", "start", "reject", "terminal", "closed", "abort"].includes(entry.kind)
+          ["state", "start", "reject", "terminal", "closed", "abort", "resume", "register_refused", "register_warning"].includes(entry.kind)
         ) {
           const detail = entry.text || entry.reason || entry.error || "";
           const body = detail ? `<div class="v">${esc(detail)}</div>` : "";
@@ -1532,7 +1611,10 @@
           badge: "#ffd479",
           mark: "●",
           title: "Needs your approval",
-          body: () => "Mat (the advisor) signed off on the task. Approve it, or reject to keep Pat working.",
+          body: (s) =>
+            s.humanRequest?.type === "abort"
+              ? `Pat & Mat want to stop: ${s.humanRequest.reason || ""}`
+              : "Pat & Mat think the task is done. Approve it, or send them back to work.",
         },
         DONE: { badge: "#3fb950", mark: "✓", title: "A je to!", body: (s) => s.terminalReason || "Session done." },
         ABORTED: { badge: "#f85149", mark: "✗", title: "Aborted", body: (s) => s.terminalReason || "Session aborted." },
@@ -1630,8 +1712,32 @@
         if (state.registered?.researcher && !lastActivity.researcher) lastActivity.researcher = Date.now();
         if (state.registered?.advisor && !lastActivity.advisor) lastActivity.advisor = Date.now();
         document.getElementById("approval").classList.toggle("visible", state.state === "AWAITING_HUMAN");
+        renderApproval(state.humanRequest);
         updateStats(state);
         updateAgents(state);
+      }
+
+      let lastApprovalRaw = null;
+      function renderApproval(request) {
+        const raw = JSON.stringify(request || null);
+        if (raw === lastApprovalRaw) return;
+        lastApprovalRaw = raw;
+        const aborting = request?.type === "abort";
+        document.getElementById("approval-title").textContent = aborting
+          ? "Pat & Mat want to give up. Confirm?"
+          : "A je to? Pat & Mat think the task is done. Your call.";
+        document.getElementById("approve-btn").textContent = aborting ? "Confirm abort" : "A je to! (approve)";
+        document.getElementById("reject-btn").textContent = aborting ? "No, keep working" : "Not quite, keep working";
+        const parts = [];
+        if (aborting) {
+          if (request.reason) parts.push(`**Reason:** ${request.reason}`);
+          if (request.proposal) parts.push(`**Proposal:** ${request.proposal}`);
+          if (request.report) parts.push(request.report);
+        } else if (request) {
+          if (request.summary) parts.push(request.summary);
+          if (request.notes) parts.push(`**Notes:** ${request.notes}`);
+        }
+        document.getElementById("approval-detail").innerHTML = parts.length ? renderMarkdown(parts.join("\n\n")) : "";
       }
 
       // --- agent tree -------------------------------------------------------
@@ -1657,13 +1763,15 @@
       }
 
       function agentStatus(a) {
-        if (a.state === "DONE") return { dot: "", text: a.id === ROOT ? "done" : "done" };
+        if (a.state === "DONE") return { dot: "", text: "done" };
         if (a.state === "ABORTED") return { dot: "", text: "aborted" };
-        if (a.state === "SUBAGENT_RUNNING") return { dot: "idle", text: "waiting" };
+        if (a.state === "CHILD_RUNNING") return { dot: "idle", text: "waiting" };
         if (a.state === "AWAITING_HUMAN") return { dot: "idle", text: "needs you" };
-        if (a.active) return { dot: "active", text: a.expecting || "active" };
+        if (a.state === "SKILLS_INSTALL") return { dot: "active", text: "installing" };
+        if (a.active) return { dot: "active", text: a.expecting ? whoName(a.expecting) : "active" };
         return { dot: "idle", text: a.state || "" };
       }
+      const KIND_LABEL = { main: "main", orchestrator: "orch", leaf: "leaf", skills: "skills" };
 
       function renderTree() {
         const children = new Map();
@@ -1684,8 +1792,9 @@
             const st = agentStatus(a);
             btn.innerHTML =
               `<i class="dot ${st.dot}" title="state: ${esc(a.state)}"></i>` +
-              `<span class="an-id" title="${esc(a.id === ROOT ? "Main session" : `Subagent ${a.id}`)}">${esc(a.id === ROOT ? "main" : a.id)}</span>` +
-              `<span class="an-title" title="${esc(a.title || "")}">${esc(a.id === ROOT ? "" : a.title || "")}</span>` +
+              `<span class="an-id" title="${esc(a.id === ROOT ? "Main session" : `${a.kind || "session"} ${a.id}`)}">${esc(a.id === ROOT ? "main" : a.id)}</span>` +
+              (a.id !== ROOT ? `<span class="an-kind">${esc(KIND_LABEL[a.kind] || a.kind || "")}</span>` : "") +
+              `<span class="an-title" title="${esc(a.goalId ? `${a.goalId} · ${a.title || ""}` : a.title || "")}">${esc(a.id === ROOT ? "" : a.goalId ? `${a.goalId} ${a.title || ""}` : a.title || "")}</span>` +
               `<span class="an-state" title="state: ${esc(a.state)}">${esc(st.text)}</span>` +
               `<span class="an-stats" data-agent="${esc(a.id)}"><span class="r"></span><span class="a"></span><span class="rt"></span></span>`;
             btn.addEventListener("click", () => selectAgent(a.id));
@@ -1745,55 +1854,76 @@
             if (raw === el.dataset.raw) return;
             el.dataset.raw = raw;
             const a = d.agent;
-            const parent = a.parentId === ROOT ? "main session" : a.parentId;
+            const parent = !a.parentId ? "the harness" : a.parentId === ROOT ? "main session" : a.parentId;
+            const o = a.outcome || null;
             el.innerHTML =
-              `<div class="ai-head">Subagent ${esc(a.id)} · ${esc(a.title || "")}</div>` +
+              `<div class="ai-head">${esc(a.kind || "session")} ${esc(a.id)}${a.title ? ` · ${esc(a.title)}` : ""}</div>` +
               `<div class="ai-sub">started by ${esc(parent)} · depth ${esc(a.depth)}${a.goalId ? ` · for ${esc(a.goalId)}` : ""} · ${esc(a.state)}</div>` +
-              `<h4>Instructions</h4><div class="md">${renderMarkdown(a.instructions || "")}</div>` +
-              (a.conditions?.length ? `<h4>Conditions</h4><div class="md">${list(a.conditions)}</div>` : "") +
-              (a.report ? `<h4>Report</h4><div class="md">${renderMarkdown(a.report)}</div>` : "");
+              (a.brief ? `<details class="nested"><summary>brief (goal, instructions, earlier notes)</summary><div class="md">${renderMarkdown(a.brief)}</div></details>` : "") +
+              (o?.report ? `<h4>Report</h4><div class="md">${renderMarkdown(o.report)}</div>` : "") +
+              (o?.notes ? `<h4>Notes</h4><div class="md">${renderMarkdown(o.notes)}</div>` : "") +
+              (o?.verdict ? `<h4>Verdict</h4><div class="md">${renderMarkdown(o.verdict)}</div>` : "") +
+              (o?.reason ? `<h4>Ended because</h4><div class="md">${renderMarkdown(o.reason)}</div>` : "");
           })
           .catch(() => {});
       }
 
       let lastGoalsRaw = null;
-      let fallbackTask = null;
+      function goalRowHtml(g, mine) {
+        const body =
+          `<div class="md">${renderMarkdown(g.description || "")}</div>` +
+          (g.acceptance?.length ? `<h5>Acceptance</h5>${list(g.acceptance)}` : "") +
+          (g.skills?.length ? `<h5>Skills</h5><div>${esc(g.skills.join(", "))}</div>` : "") +
+          (g.endReason && g.status !== "done" ? `<h5>Outcome</h5><div class="md">${renderMarkdown(g.endReason)}</div>` : "") +
+          (g.verdict ? `<h5>Verdict</h5><div class="md">${renderMarkdown(g.verdict)}</div>` : "") +
+          (g.notes ? `<h5>Notes</h5><div class="md">${renderMarkdown(g.notes)}</div>` : "") +
+          (g.report ? `<h5>Report</h5><div class="md">${renderMarkdown(g.report)}</div>` : "");
+        const child = g.childId
+          ? `<span class="g-child" data-open-agent="${esc(g.childId)}" title="open ${esc(g.childId)}">${esc(g.childId)} →</span>`
+          : "";
+        return (
+          `<details class="goal-row${mine ? " mine" : ""}" style="margin-left:${(g.depth || 0) * 14}px">` +
+          `<summary><span class="g-status ${esc(g.status)}">${esc(GOAL_STATUS_LABEL[g.status] || g.status)}</span>` +
+          `<span class="g-id">${esc(g.id)}</span><span class="g-title" title="${esc(g.title)}">${esc(g.title)}</span>${child}</summary>` +
+          `<div class="g-body">${body}</div></details>`
+        );
+      }
       function refreshGoals() {
-        const id = selectedAgent;
-        fetch(`/api/goals?agent=${encodeURIComponent(id)}&token=${encodeURIComponent(TOKEN)}`)
+        fetch(`/api/goals?token=${encodeURIComponent(TOKEN)}`)
           .then((r) => r.json())
           .then((d) => {
-            if (id !== selectedAgent) return;
-            const raw = d.goals || "";
+            const goals = Array.isArray(d.goals) ? d.goals : [];
+            goalsById = new Map(goals.map((g) => [g.id, g]));
+            refreshGoalHeads();
+            const raw = JSON.stringify([selectedAgent, goals]);
             if (raw === lastGoalsRaw) return;
             lastGoalsRaw = raw;
             const el = document.getElementById("goals");
-            if (!raw.trim()) {
-              el.innerHTML = '<div class="muted-note">(not yet written)</div>';
+            if (!goals.length) {
+              el.innerHTML = '<div class="muted-note">(no plan yet)</div>';
               return;
             }
-            el.innerHTML = renderMarkdown(raw);
+            const mine = new Set(goalsOfSelected().map((g) => g.id));
+            // Keep expanded rows open across refreshes.
+            const open = new Set([...el.querySelectorAll("details.goal-row[open] .g-id")].map((n) => n.textContent));
+            el.innerHTML = '<h4 class="goals-head">Goals</h4>' + goals.map((g) => goalRowHtml(g, mine.has(g.id))).join("");
+            for (const row of el.querySelectorAll("details.goal-row")) {
+              if (open.has(row.querySelector(".g-id").textContent)) row.open = true;
+            }
           })
           .catch(() => {});
       }
+      document.getElementById("goals").addEventListener("click", (e) => {
+        const link = e.target.closest("[data-open-agent]");
+        if (!link) return;
+        e.preventDefault();
+        selectAgent(link.dataset.openAgent);
+      });
       let lastTaskRaw = null;
-      // Recover the task from the session's opening message when the control
-      // plane predates the /api/task endpoint.
-      function extractTask(content) {
-        const start = String(content || "").indexOf("## Broad research task");
-        if (start === -1) return "";
-        let task = String(content).slice(start + "## Broad research task".length);
-        let end = task.length;
-        for (const marker of ["\n## ", "\n\nBegin by", "\n\nBegin with", "\n\nSkills step", "\n\nNow decompose"]) {
-          const idx = task.indexOf(marker);
-          if (idx !== -1 && idx > 0) end = Math.min(end, idx);
-        }
-        return task.slice(0, end).trim();
-      }
       function refreshTask() {
         const showTask = (raw) => {
           const el = document.getElementById("task");
-          // A subagent's subtask is shown in the agent info block instead.
+          // A subagent's goal and instructions are shown in the agent info block instead.
           el.hidden = selectedAgent !== ROOT;
           if (!raw || !raw.trim()) {
             el.innerHTML = '<div class="muted-note">(no task provided)</div>';
@@ -1807,9 +1937,9 @@
           .then((r) => r.json())
           .then((d) => {
             setRunLabel(d?.label);
-            showTask((d && d.task) || fallbackTask || "");
+            showTask((d && d.task) || "");
           })
-          .catch(() => showTask(fallbackTask || ""));
+          .catch(() => showTask(""));
       }
       refreshTask();
       refreshGoals();

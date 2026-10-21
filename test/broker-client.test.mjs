@@ -16,7 +16,6 @@ async function withControlPlane(fn) {
     task: "x",
     transcriptDir,
     sessionId: "s",
-    goalsPath: path.join(tmp, "GOALS.md"),
     port: 0,
   });
   try {
@@ -36,23 +35,24 @@ describe("broker client illegal handoffs", () => {
       });
       await client.register();
 
-      // The researcher is in the skills phase (expects propose_skills); a result is illegal.
+      // The skills session expects propose_skills from the researcher; a result is illegal.
       const res = await client.send({
         role: "researcher",
-        kind: "result",
-        goalId: "G3",
+        kind: "submit_result",
+        goalId: null,
         text: "sneaky result",
         payload: {},
+        agentId: "skills",
       });
       assert.equal(res.ok, false, "must not throw; must return structured rejection");
-      assert.match(res.error, /cannot send 'result'/);
+      assert.match(res.error, /'submit_result' is not a researcher action in a skills session/);
 
       // The broker should have queued a correction prompt telling us what to do.
       const batch = await client.poll(0, 500);
       const correction = batch.messages.find((m) => m.kind === "prompt");
       assert.ok(correction, "a correction prompt should be queued");
-      assert.match(correction.text, /propose_skills/);
-      assert.match(correction.text, /RESEARCHER_SKILLS/);
+      assert.match(correction.text, /`propose_skills`/);
+      assert.match(correction.text, /SKILLS_PROPOSE/);
     });
   });
 });

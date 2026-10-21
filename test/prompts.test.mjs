@@ -2,79 +2,78 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { describe, it } from "node:test";
 
-import { buildAdvisorPrompt, buildResearcherPrompt } from "../agent/lib/prompts.mjs";
+import { buildSystemPrompt } from "../agent/lib/prompts.mjs";
 import { loadSkillIndex } from "../agent/lib/skills.mjs";
 
-const BASE = { sandbox: "/sandbox", configDir: null, supportsImage: true, task: "Do research." };
+const BASE = { configDir: null, supportsImage: true, task: "Do research." };
 
-describe("role prompts", () => {
-  it("researcher prompt includes the skills phase by default", () => {
-    const prompt = buildResearcherPrompt({ ...BASE });
-    assert.match(prompt, /Phase 0 — skills discovery/);
-    assert.match(prompt, /propose_skills/);
-    assert.match(prompt, /Do NOT submit a task plan until the skills step is complete/);
+describe("system prompts", () => {
+  it("main researcher coordinates and never implements", () => {
+    const prompt = buildSystemPrompt({ ...BASE, role: "researcher", kind: "main" });
+    assert.match(prompt, /RESEARCHER of the MAIN session/);
+    assert.match(prompt, /## The task\nDo research\./);
+    assert.match(prompt, /review the advisor's plan/);
+    assert.match(prompt, /You never implement anything yourself/);
+    assert.match(prompt, /read-only file tools/);
+    assert.match(prompt, /there is no goals file/);
+    assert.match(prompt, /`advisory` items are non-blocking/);
   });
 
-  it("researcher prompt skips the skills phase when skipSkills is set", () => {
-    const prompt = buildResearcherPrompt({ ...BASE, skipSkills: true });
-    assert.doesNotMatch(prompt, /Phase 0 — skills discovery/);
-    assert.doesNotMatch(prompt, /do this before anything else/);
-    // The skills control tools are no longer listed (only named to say "do NOT
-    // call them").
-    assert.doesNotMatch(prompt, /\n  - propose_skills/);
-    assert.doesNotMatch(prompt, /\n  - confirm_skills_installed/);
-    assert.match(prompt, /skills-discovery phase is skipped/);
-    assert.match(prompt, /decomposing the task into goals/);
+  it("main advisor owns the plan and approves delegations with a focus on scope", () => {
+    const prompt = buildSystemPrompt({ ...BASE, role: "advisor", kind: "main" });
+    assert.match(prompt, /Write the plan/);
+    assert.match(prompt, /focusing on scope/);
+    assert.match(prompt, /plan changes/);
+    assert.match(prompt, /VERIFY[\s\S]*CRITIQUE[\s\S]*EXPLORE/);
   });
 
-  it("researcher prompt still mandates using pre-installed skills with skipSkills", () => {
-    const prompt = buildResearcherPrompt({ ...BASE, skipSkills: true });
-    assert.match(prompt, /Skills are mandatory when relevant/);
-    assert.match(prompt, /MUST still use them where\s+relevant/);
+  it("orchestrator researcher cannot change its subgoals", () => {
+    const prompt = buildSystemPrompt({ ...BASE, role: "researcher", kind: "orchestrator", sessionId: "S2", brief: "## Your goal\nG2" });
+    assert.match(prompt, /ORCHESTRATOR session \(session S2\)/);
+    assert.match(prompt, /Overall task \(context only/);
+    assert.match(prompt, /## Your goal\nG2/);
+    assert.match(prompt, /You cannot change your subgoals/);
   });
 
-  it("advisor prompt is unaffected by skipSkills", () => {
-    const prompt = buildAdvisorPrompt({ ...BASE });
-    assert.match(prompt, /approve_skills/);
-    assert.match(prompt, /request_skill_changes/);
+  it("leaf researcher implements, reports and may request an abort", () => {
+    const prompt = buildSystemPrompt({ ...BASE, role: "researcher", kind: "leaf", sessionId: "S3", brief: "## Your goal\nG2.1" });
+    assert.match(prompt, /Implement your goal/);
+    assert.match(prompt, /`report` for the parent/);
+    assert.match(prompt, /`notes` for later agents/);
+    assert.match(prompt, /request_abort/);
+    assert.match(prompt, /prefer the dedicated tools over bash/);
   });
 
-  it("advisor prompt carries the always-on doctrine and exploratory self-check", () => {
-    const prompt = buildAdvisorPrompt({ ...BASE });
-    assert.match(prompt, /Advisor doctrine/);
-    assert.match(prompt, /VERIFY \(gating\)/);
-    assert.match(prompt, /CRITIQUE \(red-team\)/);
-    assert.match(prompt, /EXPLORE \(value-add\)/);
-    assert.match(prompt, /Is there value we can add beyond what is explicitly in the task\?/);
-    assert.match(prompt, /Is there a plausible failure or stronger alternative/);
-    assert.match(prompt, /`advisory` items are fire-and-forget recommendations/);
-    assert.match(prompt, /advisor-grilling/);
+  it("leaf advisor treats acceptance criteria as a floor", () => {
+    const prompt = buildSystemPrompt({ ...BASE, role: "advisor", kind: "leaf", sessionId: "S3" });
+    assert.match(prompt, /Acceptance criteria are\s+the floor, not the definition of done/);
+    assert.match(prompt, /tests pass but the feature does not work/);
   });
 
-  it("researcher prompt asks it to respond to advisory recommendations", () => {
-    const prompt = buildResearcherPrompt({ ...BASE });
-    assert.match(prompt, /Respond to advisor recommendations/);
-    assert.match(prompt, /`advisory` recommendations/);
-    assert.match(prompt, /briefly justify declining/);
+  it("skills session has no goal tools section", () => {
+    const prompt = buildSystemPrompt({ ...BASE, role: "researcher", kind: "skills" });
+    assert.match(prompt, /npx skills find/);
+    assert.doesNotMatch(prompt, /## Goals/);
+  });
+
+  it("lists installed skills", () => {
+    const prompt = buildSystemPrompt({
+      ...BASE,
+      role: "researcher",
+      kind: "leaf",
+      installedSkills: [{ name: "tdd", description: "test first", path: "/sandbox/skills/tdd/SKILL.md" }],
+    });
+    assert.match(prompt, /tdd: test first → \/sandbox\/skills\/tdd\/SKILL\.md/);
   });
 
   it("advisor config ships the always-on skill packs and a decision-tree index", () => {
-    const { skillsReadme, skillEntries } = loadSkillIndex(
-      path.resolve("config", "advisor"),
-    );
+    const { skillsReadme, skillEntries } = loadSkillIndex(path.resolve("config", "advisor"));
     assert.ok(skillsReadme, "config/advisor/skills/README.md should be injected");
-    assert.match(skillsReadme, /advisor-grilling/);
-    assert.match(skillsReadme, /advisor-brainstorming/);
-    assert.match(skillsReadme, /advisor-caveman-review/);
-    assert.match(skillsReadme, /advisor-research-rigor/);
+    for (const pack of ["advisor-grilling", "advisor-brainstorming", "advisor-caveman-review", "advisor-research-rigor"]) {
+      assert.match(skillsReadme, new RegExp(pack));
+    }
     const names = skillEntries.map((e) => e.name);
-    for (const expected of [
-      "advisor-brainstorming",
-      "advisor-grilling",
-      "advisor-caveman-review",
-      "advisor-research-rigor",
-      "reviewing-skills",
-    ]) {
+    for (const expected of ["advisor-brainstorming", "advisor-grilling", "advisor-caveman-review", "advisor-research-rigor", "reviewing-skills"]) {
       assert.ok(names.includes(expected), `expected pack ${expected} to be indexed`);
     }
   });

@@ -11,7 +11,7 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { createBroker } from "./broker.mjs";
+import { createBroker, sessionLogPath } from "./broker.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UI_PATH = path.join(__dirname, "ui", "index.html");
@@ -35,7 +35,7 @@ function sendJson(res, status, obj) {
   res.end(body);
 }
 
-/** Subagent transcripts: `agents/<id>/<role>.jsonl` under the transcript dir. */
+/** Subagent transcripts: `agents/<id>/<role>.jsonl` under the transcript dir (absolute paths). */
 function subagentTranscriptFiles(dir) {
   const files = [];
   let ids = [];
@@ -47,13 +47,17 @@ function subagentTranscriptFiles(dir) {
   for (const ent of ids) {
     if (!ent.isDirectory()) continue;
     for (const role of ["researcher", "advisor"]) {
-      const rel = path.join("agents", ent.name, `${role}.jsonl`);
-      if (fs.existsSync(path.join(dir, rel))) files.push(rel);
+      const abs = path.join(dir, "agents", ent.name, `${role}.jsonl`);
+      if (fs.existsSync(abs)) files.push(abs);
     }
   }
   return files;
 }
 
+/**
+ * Follows the transcript files (absolute paths) and emits their new entries;
+ * subagent transcripts under `dir/agents` are picked up as they appear.
+ */
 class TranscriptTailer {
   constructor(dir, files) {
     this.dir = dir;
@@ -81,8 +85,8 @@ class TranscriptTailer {
   tick() {
     this.discover();
     const batch = [];
-    for (const file of this.offsets.keys()) {
-      const abs = path.join(this.dir, file);
+    for (const abs of this.offsets.keys()) {
+      const file = abs;
       let stat;
       try {
         stat = fs.statSync(abs);
@@ -143,7 +147,14 @@ class TranscriptTailer {
  * @param {number} [opts.wallclockMs]
  * @returns {Promise<{ server, broker, port, url, waitForExit }>}
  */
-const TRANSCRIPT_FILES = ["researcher.jsonl", "advisor.jsonl", "session.jsonl"];
+/** Files followed from the start: both agents' root transcripts and the control log. */
+function baseTranscriptFiles(opts) {
+  return [
+    path.join(opts.transcriptDir, "researcher.jsonl"),
+    path.join(opts.transcriptDir, "advisor.jsonl"),
+    sessionLogPath(opts.runDir),
+  ];
+}
 
 /**
  * Read every entry currently on disk (up to the tailer's committed offsets),
@@ -155,15 +166,14 @@ const TRANSCRIPT_FILES = ["researcher.jsonl", "advisor.jsonl", "session.jsonl"];
  * @param {string} dir
  * @param {Map<string, number>} [offsets]
  */
-function readTranscriptHistory(dir, offsets = null) {
+function readTranscriptHistory(files, offsets = null) {
   const entries = [];
   // Only files the tailer knows about: a newer file is read from 0 by its next
   // tick, so reading it here too would duplicate its entries.
-  const files = offsets ? [...offsets.keys()] : [...TRANSCRIPT_FILES, ...subagentTranscriptFiles(dir)];
-  for (const file of files) {
+  for (const file of offsets ? [...offsets.keys()] : files) {
     let buf;
     try {
-      buf = fs.readFileSync(path.join(dir, file));
+      buf = fs.readFileSync(file);
     } catch {
       continue;
     }
@@ -183,37 +193,26 @@ function readTranscriptHistory(dir, offsets = null) {
 }
 
 export function startControlPlane(opts) {
+  // The run folder holds transcripts/ and control/ side by side.
+  opts = { ...opts, runDir: opts.runDir || path.dirname(opts.transcriptDir) };
   const broker = createBroker({
-    token: opts.token,
     task: opts.task,
-    transcriptDir: opts.transcriptDir,
+    runDir: opts.runDir,
     sessionId: opts.sessionId,
-    maxHandoffs: opts.maxHandoffs || 0,
     initialNote: opts.initialNote || "",
     skipSkills: opts.skipSkills || false,
-    installedSkillsPath: opts.installedSkillsPath || null,
-    initialState: opts.initialState || null,
-    initialResearcherSteps: opts.initialResearcherSteps || 0,
-    initialAgents: opts.initialAgents || null,
-    initialActiveId: opts.initialActiveId || null,
-    initialRootPendingProposal: opts.initialRootPendingProposal || null,
-    initialRootLastPlanExecution: opts.initialRootLastPlanExecution || null,
-    researcherSandbox: opts.researcherSandbox || (opts.goalsPath ? path.dirname(opts.goalsPath) : null),
-    agentsDir: opts.agentsDir || null,
+    preinstalledSkills: opts.preinstalledSkills || [],
     maxSubagentDepth: opts.maxSubagentDepth ?? null,
-    delegation: opts.delegation || "optional",
+    maxPlanChanges: opts.maxPlanChanges || 0,
+    maxSubagentRejections: opts.maxSubagentRejections || 0,
+    maxHandoffs: opts.maxHandoffs || 0,
+    replayEntries: opts.replayEntries || null,
+    expectedCodeHash: opts.expectedCodeHash || null,
+    allowStaleImage: Boolean(opts.allowStaleImage),
+    image: opts.image || null,
   });
-  const researcherSandbox =
-    opts.researcherSandbox || (opts.goalsPath ? path.dirname(opts.goalsPath) : null);
 
-  /** GOALS.md of the root (default) or of a subagent. */
-  function goalsPathFor(agentId) {
-    if (!agentId || agentId === "root") return opts.goalsPath;
-    if (!/^[A-Za-z0-9_-]+$/.test(agentId) || !researcherSandbox) return null;
-    return path.join(researcherSandbox, "agents", agentId, "GOALS.md");
-  }
-
-  const tailer = new TranscriptTailer(opts.transcriptDir, TRANSCRIPT_FILES);
+  const tailer = new TranscriptTailer(opts.transcriptDir, baseTranscriptFiles(opts));
   tailer.start();
 
   const sseClients = new Set();
@@ -282,20 +281,22 @@ export function startControlPlane(opts) {
         return;
       }
 
+      // The harness-owned goal tree (UI, and the agents' list_goals tool).
       if (route === "GET /api/goals") {
-        let text = "";
-        try {
-          text = fs.readFileSync(goalsPathFor(url.searchParams.get("agent")), "utf8");
-        } catch {
-          text = "";
-        }
-        sendJson(res, 200, { ok: true, goals: text });
+        sendJson(res, 200, { ok: true, ...broker.goalTree() });
         return;
       }
 
-      // Subagent metadata: instructions, status and (when finished) report.
+      // One goal in full (the agents' read_goal tool).
+      if (route === "GET /api/goal") {
+        const text = broker.goalDetail(url.searchParams.get("id") || "");
+        sendJson(res, text ? 200 : 404, text ? { ok: true, goal: text } : { ok: false, error: "unknown goal id" });
+        return;
+      }
+
+      // Session metadata: kind, brief, goals, outcome.
       if (route === "GET /api/agent") {
-        const info = broker.agentInfo(url.searchParams.get("agent") || "root");
+        const info = broker.sessionInfo(url.searchParams.get("agent") || "root");
         sendJson(res, info ? 200 : 404, info ? { ok: true, agent: info } : { ok: false, error: "unknown agent" });
         return;
       }
@@ -315,7 +316,7 @@ export function startControlPlane(opts) {
         // Replay the full transcript so far, then subscribe to the live tail.
         // (Ordering matters: history is written before this client is added,
         // and the handler is synchronous, so nothing is missed or duplicated.)
-        const history = readTranscriptHistory(opts.transcriptDir, tailer.offsets);
+        const history = readTranscriptHistory(baseTranscriptFiles(opts), tailer.offsets);
         res.write(`data: ${JSON.stringify({ type: "history", entries: history })}\n\n`);
         sseClients.add(res);
         const keepalive = setInterval(() => {
@@ -334,7 +335,9 @@ export function startControlPlane(opts) {
 
       if (route === "POST /api/register") {
         const body = JSON.parse((await readBody(req)) || "{}");
-        sendJson(res, 200, broker.register(body.role));
+        const result = broker.register(body.role, body.codeHash ?? null);
+        // 400: the agent treats it as fatal instead of retrying.
+        sendJson(res, result.ok ? 200 : 400, result);
         return;
       }
 
@@ -408,10 +411,10 @@ export function startControlPlane(opts) {
       const url = `http://${urlHost}:${actualPort}/?token=${encodeURIComponent(opts.token)}`;
       // View-only mode (e.g. --view a finished run) must not deliver the start
       // message or touch agents; just seed the final state for display.
-      if (!opts.viewOnly) broker.start();
-      if (opts.seedState) {
-        broker.seed(opts.seedState, { agents: opts.seedAgents || null, activeId: opts.seedActiveId || null });
-      }
+      // Fresh runs start here; resumed runs are re-prompted by the caller and
+      // viewed runs (--view) only display the replayed state.
+      if (opts.viewOnly) broker.freeze();
+      else if (!opts.replayEntries?.length) broker.start();
       const extraServers = [];
       resolve({
         server,

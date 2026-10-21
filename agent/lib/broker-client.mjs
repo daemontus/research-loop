@@ -23,10 +23,11 @@ export function createBrokerClient({ brokerUrl, role, token }) {
   }
 
   return {
-    async register() {
+    /** @param {{ codeHash?: string }} [info] fingerprint of the agent code (code-hash.mjs) */
+    async register(info = {}) {
       return jsonFetch(`${base}/api/register`, {
         method: "POST",
-        body: JSON.stringify({ role }),
+        body: JSON.stringify({ role, codeHash: info.codeHash ?? null }),
       });
     },
 
@@ -61,6 +62,17 @@ export function createBrokerClient({ brokerUrl, role, token }) {
         throw new Error(`broker POST /api/message -> ${res.status}: ${body.slice(0, 300)}`);
       }
       return res.json();
+    },
+
+    /** The goal tree ({ goals, markdown }). */
+    async goals() {
+      return jsonFetch(`${base}/api/goals`, { method: "GET" });
+    },
+
+    /** One goal in full ({ ok, goal } or { ok: false, error }). */
+    async goal(id) {
+      const res = await fetch(`${base}/api/goal?id=${encodeURIComponent(id)}`, { headers });
+      return res.json().catch(() => ({ ok: false, error: `broker GET /api/goal -> ${res.status}` }));
     },
 
     /** Best-effort live output for the WebUI (not persisted, never throws). */

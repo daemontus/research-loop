@@ -8,7 +8,7 @@ import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 
 import { AgentSession } from "../agent/lib/agent-runner.mjs";
-import { bindControlTools, advisorControlToolDefs, researcherControlToolDefs } from "../agent/lib/control-tools.mjs";
+import { bindControlTools, CONTROL_TOOLS_BY_KIND } from "../agent/lib/control-tools.mjs";
 import { makeCredentialStore } from "../agent/lib/model-providers.mjs";
 import { renderInbound } from "../agent/lib/protocol.mjs";
 import { makeTools } from "../agent/lib/tools.mjs";
@@ -34,10 +34,9 @@ function makeSession({ role, tmp, faux, models, model, responses }) {
     },
   };
   const generic = makeTools(sandbox, { configDir: null, prefetchPath: "/prefetch", supportsImage: false });
-  const control = bindControlTools(
-    role === "researcher" ? researcherControlToolDefs() : advisorControlToolDefs(),
-    controller,
-  );
+  // One conversation serves every session here, so offer every tool of the role.
+  const names = [...new Set(Object.values(CONTROL_TOOLS_BY_KIND).flatMap((k) => k[role]))];
+  const control = bindControlTools(names, controller);
   const session = new AgentSession({
     role,
     model,
@@ -55,48 +54,25 @@ function makeSession({ role, tmp, faux, models, model, responses }) {
   return session;
 }
 
-function planResponse(goalId) {
-  return fauxAssistantMessage(
-    [
-      fauxText(`Here is the plan for ${goalId}.`),
-      fauxToolCall("submit_plan", {
-        goalId,
-        title: `Goal ${goalId}`,
-        plan: ["do a", "do b"],
-        acceptanceCriteria: ["a is done", "b is done"],
-      }),
-    ],
-    { stopReason: "toolUse" },
-  );
-}
-
-function resultResponse(goalId) {
+/** A phase-ending handoff (a leaf researcher's result). */
+function workResponse(goalId) {
   return fauxAssistantMessage(
     [
       fauxText(`Result for ${goalId}.`),
       fauxToolCall("submit_result", {
-        goalId,
         summary: "Implemented and tested.",
+        report: `Implemented ${goalId}.`,
+        notes: "None.",
         artifacts: ["src/a.txt"],
         verification: ["ran tests"],
-        status: "complete",
       }),
     ],
     { stopReason: "toolUse" },
   );
 }
 
-function taskRequestResponse() {
-  return fauxAssistantMessage(
-    [
-      fauxText("All goals complete."),
-      fauxToolCall("request_task_completion", {
-        summary: "Done.",
-        deliverables: ["src/a.txt"],
-      }),
-    ],
-    { stopReason: "toolUse" },
-  );
+function researcherResponse(tool, payload) {
+  return fauxAssistantMessage([fauxText(`Researcher: ${tool}.`), fauxToolCall(tool, payload)], { stopReason: "toolUse" });
 }
 
 function advisorResponse(tool, payload) {
@@ -106,44 +82,15 @@ function advisorResponse(tool, payload) {
   );
 }
 
-function skillsProposalResponse() {
-  return fauxAssistantMessage(
-    [
-      fauxText("Proposing skills."),
-      fauxToolCall("propose_skills", {
-        summary: "A testing skill is relevant.",
-        skills: [{ name: "tdd", source: "owner/repo", why: "test-driven development" }],
-      }),
-    ],
-    { stopReason: "toolUse" },
-  );
-}
-
-function skillsReadyResponse() {
-  return fauxAssistantMessage(
-    [
-      fauxText("Installed the approved skills."),
-      fauxToolCall("confirm_skills_installed", { installed: [] }),
-    ],
-    { stopReason: "toolUse" },
-  );
-}
 
 describe("end-to-end loop (faux provider)", () => {
-  it("runs the full turn-taking protocol through the broker", async () => {
+  it("runs the full protocol through the broker: skills, plan, a delegated goal, human sign-off", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "research-loop-e2e-"));
-    const transcripts = path.join(tmp, "transcripts");
-    const broker = createBroker({
-      token: "t",
-      task: "Design a thing.",
-      transcriptDir: transcripts,
-      sessionId: "s1",
-      maxHandoffs: 20,
-    });
+    const broker = createBroker({ task: "Design a thing.", runDir: tmp, sessionId: "s1", maxHandoffs: 40 });
+    const goal = { id: "G1", title: "Design", description: "Design the thing.", acceptance: ["design.md explains it"] };
 
     const rFaux = makeFaux();
     const aFaux = makeFaux();
-
     const researcher = makeSession({
       role: "researcher",
       tmp,
@@ -151,11 +98,11 @@ describe("end-to-end loop (faux provider)", () => {
       models: rFaux.models,
       model: rFaux.model,
       responses: [
-        skillsProposalResponse(),
-        skillsReadyResponse(),
-        planResponse("G1"),
-        resultResponse("G1"),
-        taskRequestResponse(),
+        researcherResponse("propose_skills", { summary: "none", noneNeeded: true, skills: [] }),
+        researcherResponse("accept_plan", { feedback: "clear" }),
+        researcherResponse("propose_subagent", { goalId: "G1", mode: "full", instructions: "Write design.md.", justification: "Small." }),
+        workResponse("G1"),
+        researcherResponse("finish_session", { summary: "Done.", notes: "none" }),
       ],
     });
     const advisor = makeSession({
@@ -166,81 +113,62 @@ describe("end-to-end loop (faux provider)", () => {
       model: aFaux.model,
       responses: [
         advisorResponse("approve_skills", { feedback: "ok" }),
-        advisorResponse("approve_plan", { goalId: "G1", feedback: "go" }),
-        advisorResponse("accept_result", { goalId: "G1", feedback: "verified" }),
-        advisorResponse("accept_task_completion", { summary: "complete", feedback: "ok" }),
+        advisorResponse("propose_plan", { goals: [goal], rationale: "one goal" }),
+        advisorResponse("approve_subagent", { feedback: "go" }),
+        advisorResponse("accept_result", { feedback: "verified", verification: ["read design.md"] }),
       ],
     });
     await researcher.start();
     await advisor.start();
     broker.start();
 
-    let rCursor = 0;
-    let aCursor = 0;
-    const step = async (role, session, cursor) => {
-      const batch = await broker.poll(role, cursor, 200);
-      assert.ok(batch.messages.length > 0, `${role} expected a message`);
-      const c = batch.cursor;
+    const cursors = { researcher: 0, advisor: 0 };
+    const sessions = { researcher, advisor };
+    // Run every queued phase of `role`, returning the session it acted in.
+    const step = async (role) => {
+      const batch = await broker.poll(role, cursors[role], 200);
+      cursors[role] = batch.cursor;
+      let acted = null;
       for (const envelope of batch.messages) {
-        const prompt =
-          envelope.role === "control"
-            ? envelope.text
-            : renderInbound(envelope);
-        const { error } = await session.runPrompt(prompt);
+        if (envelope.kind === "agent_done") continue;
+        const prompt = envelope.role === "control" ? envelope.text : renderInbound(envelope);
+        const { error } = await sessions[role].runPrompt(prompt);
         assert.equal(error, null, `${role} phase error: ${error}`);
-        const handoff = session.takeHandoff();
+        const handoff = sessions[role].takeHandoff();
         assert.ok(handoff, `${role} produced no handoff`);
-        const res = broker.receiveAgentEnvelope(role, handoff);
+        const res = broker.receiveAgentEnvelope(role, { ...handoff, agentId: envelope.agentId });
         assert.equal(res.ok, true, `${role} handoff rejected: ${res.error}`);
+        acted = envelope.agentId;
       }
-      return c;
+      assert.ok(acted, `${role} expected a message`);
+      return acted;
     };
+    const state = () => broker.snapshot();
 
-    // researcher start -> skills proposal
-    rCursor = await step("researcher", researcher, rCursor);
-    assert.equal(broker.snapshot().state, "ADVISOR_REVIEW_SKILLS");
+    assert.equal(await step("researcher"), "skills");
+    assert.equal(state().activeState, "SKILLS_REVIEW");
+    await step("advisor"); // approve (nothing to install) -> main starts with the advisor planning
+    await step("advisor"); // propose_plan
+    assert.equal(state().activeState, "PLAN_REVIEW");
+    await step("researcher"); // accept_plan, then the harness asks it to prepare G1
+    await step("researcher"); // propose_subagent
+    assert.equal(state().activeState, "SUBAGENT_REVIEW");
+    await step("advisor"); // approve_subagent -> leaf S1
+    assert.equal(state().activeAgent, "S1");
+    assert.equal(await step("researcher"), "S1"); // submit_result
+    await step("advisor"); // accept_result -> back to main, reflecting
+    assert.equal(state().activeAgent, "root");
+    assert.equal(state().activeState, "REFLECT");
+    await step("researcher"); // finish_session
+    assert.equal(state().state, "AWAITING_HUMAN");
+    assert.equal(broker.humanDecision({ action: "approve", text: "great" }).ok, true);
+    assert.equal(state().state, "DONE");
 
-    // advisor approves skills -> researcher installs
-    aCursor = await step("advisor", advisor, aCursor);
-    assert.equal(broker.snapshot().state, "RESEARCHER_INSTALL_SKILLS");
-
-    // researcher confirms installed -> planning (a prompt is queued for the researcher)
-    rCursor = await step("researcher", researcher, rCursor);
-    assert.equal(broker.snapshot().state, "RESEARCHER_DECOMPOSE");
-
-    // researcher plan -> advisor reviews
-    rCursor = await step("researcher", researcher, rCursor);
-    assert.equal(broker.snapshot().state, "ADVISOR_REVIEW_PLAN");
-
-    // advisor approves -> researcher executes
-    aCursor = await step("advisor", advisor, aCursor);
-    assert.equal(broker.snapshot().state, "RESEARCHER_EXECUTE");
-
-    // researcher result -> advisor reviews
-    rCursor = await step("researcher", researcher, rCursor);
-    assert.equal(broker.snapshot().state, "ADVISOR_REVIEW_RESULT");
-
-    // advisor accepts -> goal met
-    aCursor = await step("advisor", advisor, aCursor);
-    assert.equal(broker.snapshot().state, "RESEARCHER_DECOMPOSE");
-
-    // researcher requests task completion -> advisor reviews task
-    rCursor = await step("researcher", researcher, rCursor);
-    assert.equal(broker.snapshot().state, "ADVISOR_REVIEW_TASK");
-
-    // advisor accepts task -> awaiting human
-    aCursor = await step("advisor", advisor, aCursor);
-    assert.equal(broker.snapshot().state, "AWAITING_HUMAN");
-
-    // human approves -> done
-    const decision = broker.humanDecision({ action: "approve", text: "great" });
-    assert.equal(decision.terminal, "done");
-    assert.equal(broker.snapshot().state, "DONE");
-
-    // Transcripts exist for both agents and session.
-    assert.ok(fs.existsSync(path.join(transcripts, "researcher.jsonl")));
-    assert.ok(fs.existsSync(path.join(transcripts, "advisor.jsonl")));
-    assert.ok(fs.existsSync(path.join(transcripts, "session.jsonl")));
+    assert.equal(broker.goalTree().goals[0].status, "done");
+    assert.ok(fs.existsSync(path.join(tmp, "control", "session.jsonl")));
+    assert.match(fs.readFileSync(path.join(tmp, "goals.md"), "utf8"), /\[x\] G1 — Design/);
+    assert.ok(fs.existsSync(path.join(tmp, "agents", "S1", "report.md")));
+    assert.ok(fs.existsSync(path.join(tmp, "plans", "root", "v1.json")));
   });
 
   it("recovers from a context-overflow provider error by compacting and retrying", async () => {
@@ -259,7 +187,7 @@ describe("end-to-end loop (faux provider)", () => {
             "Requested token count exceeds the model's maximum context length. " +
             "Please reduce the number of tokens.",
         }),
-        planResponse("G1"),
+        workResponse("G1"),
       ],
     });
     await researcher.start();
@@ -267,7 +195,7 @@ describe("end-to-end loop (faux provider)", () => {
     assert.equal(error, null);
     const handoff = researcher.takeHandoff();
     assert.ok(handoff, "should still produce a handoff after recovering");
-    assert.equal(handoff.kind, "proposal");
+    assert.equal(handoff.kind, "submit_result");
     assert.ok(
       researcher.stats().contextOverflowRetries >= 1,
       "should record a context-overflow retry",
@@ -288,7 +216,7 @@ describe("end-to-end loop (faux provider)", () => {
           stopReason: "error",
           errorMessage: "This operation was aborted",
         }),
-        planResponse("G1"),
+        workResponse("G1"),
       ],
     });
     await researcher.start();
@@ -296,7 +224,7 @@ describe("end-to-end loop (faux provider)", () => {
     assert.equal(error, null);
     const handoff = researcher.takeHandoff();
     assert.ok(handoff, "should recover and produce a handoff");
-    assert.equal(handoff.kind, "proposal");
+    assert.equal(handoff.kind, "submit_result");
     assert.ok(researcher.stats().abortRetries >= 1, "should record an abort retry");
   });
 
@@ -311,7 +239,7 @@ describe("end-to-end loop (faux provider)", () => {
       model: rFaux.model,
       responses: [
         fauxAssistantMessage("", { stopReason: "error", errorMessage: "terminated" }),
-        planResponse("G1"),
+        workResponse("G1"),
       ],
     });
     await researcher.start();
@@ -319,56 +247,29 @@ describe("end-to-end loop (faux provider)", () => {
     assert.equal(error, null);
     const handoff = researcher.takeHandoff();
     assert.ok(handoff, "should recover and produce a handoff");
-    assert.equal(handoff.kind, "proposal");
+    assert.equal(handoff.kind, "submit_result");
     assert.ok(
       researcher.stats().providerErrorRetries >= 1,
       "should record a provider-error retry",
     );
   });
 
-  it("rejects an out-of-order handoff and asks the sender to retry", async () => {
+  it("ignores an out-of-turn handoff and corrects an illegal one", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "research-loop-e2e-bad-"));
-    const broker = createBroker({
-      token: "t",
-      task: "x",
-      transcriptDir: path.join(tmp, "transcripts"),
-      sessionId: "s2",
-      skipSkills: true,
-    });
-    broker.register("researcher");
-    const rFaux = makeFaux();
-    const researcher = makeSession({
-      role: "researcher",
-      tmp,
-      faux: rFaux.faux,
-      models: rFaux.models,
-      model: rFaux.model,
-      // First a valid proposal, then an illegal result while the advisor is reviewing.
-      responses: [planResponse("G1"), resultResponse("G1")],
-    });
-    await researcher.start();
-    const first = await broker.poll("researcher", 0, 200);
-    for (const env of first.messages) {
-      await researcher.runPrompt(env.role === "control" ? env.text : renderInbound(env));
-      const h = researcher.takeHandoff();
-      const res = broker.receiveAgentEnvelope("researcher", h);
-      assert.equal(res.ok, true);
-    }
-    // Now send an illegal result (advisor is reviewing the plan).
-    const illegal = {
-      role: "researcher",
-      kind: "result",
-      goalId: "G1",
-      text: "sneaky",
-      payload: {},
-      ts: Date.now(),
-    };
-    const res = broker.receiveAgentEnvelope("researcher", illegal);
-    assert.equal(res.ok, false);
-    // A correction prompt should be queued for the researcher.
-    const correction = await broker.poll("researcher", 0, 200);
-    const kinds = correction.messages.map((m) => m.kind);
-    assert.ok(kinds.includes("prompt"));
+    const broker = createBroker({ task: "x", runDir: tmp, sessionId: "s2", skipSkills: true });
+    broker.start();
+    // The advisor plans first; the researcher acting now is out of turn and just waits.
+    const early = broker.receiveAgentEnvelope("researcher", { role: "researcher", kind: "accept_plan", text: "", payload: {}, ts: Date.now() });
+    assert.equal(early.ok, false);
+    assert.equal(early.wait, true);
+    assert.equal((await broker.poll("researcher", 0, 50)).messages.length, 0, "no correction for an out-of-turn handoff");
+    // An action that is not allowed now gets a correction prompt.
+    const illegal = broker.receiveAgentEnvelope("advisor", { role: "advisor", kind: "approve_subagent", text: "", payload: {}, ts: Date.now() });
+    assert.equal(illegal.ok, false);
+    const msgs = (await broker.poll("advisor", 0, 50)).messages;
+    const correction = msgs.find((m) => m.kind === "prompt");
+    assert.ok(correction);
+    assert.match(correction.text, /call one of: `propose_plan`/);
   });
 
   it("compacts mid-phase when the prompt approaches the context window", async () => {
@@ -394,7 +295,7 @@ describe("end-to-end loop (faux provider)", () => {
           [fauxText("Inspecting."), fauxToolCall("read_file", { path: "notes.md" })],
           { stopReason: "toolUse" },
         ),
-        planResponse("G1"),
+        workResponse("G1"),
       ],
     });
     await researcher.start();
@@ -402,7 +303,7 @@ describe("end-to-end loop (faux provider)", () => {
     assert.equal(error, null, "should recover by compacting, not fail");
     const handoff = researcher.takeHandoff();
     assert.ok(handoff, "should still produce a handoff after compaction");
-    assert.equal(handoff.kind, "proposal");
+    assert.equal(handoff.kind, "submit_result");
     const stats = researcher.stats();
     assert.equal(stats.proximityCompactions, 1, "should compact once");
     assert.ok(

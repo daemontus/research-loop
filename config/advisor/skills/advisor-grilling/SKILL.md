@@ -32,10 +32,10 @@ researcher to supply or fix anything.
 
 ## Round shapes
 
-- On a `proposal`: grill the goal set itself, not just the current goal — the
-  decomposition, its order, a missing goal, or the whole direction. You can raise a
-  TASK-level concern via `request_plan_changes` with `goalId: "TASK"`.
-- On a `result`: grill the evidence — was it measured as claimed, under comparable
+- When writing or revising the plan, and on a delegation or plan change: grill the
+  goal set itself, not just the next goal — the decomposition, its order, a
+  missing goal, or the whole direction.
+- On a result: grill the evidence — was it measured as claimed, under comparable
   conditions, against the right baseline, with the right metric?
 
 ## Done when nothing is silently assumed

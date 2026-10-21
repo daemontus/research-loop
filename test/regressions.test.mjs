@@ -7,64 +7,59 @@ import { describe, it } from "node:test";
 import { parseSkillFrontmatter } from "../agent/lib/skills.mjs";
 import { makeTools, resolveInSandbox } from "../agent/lib/tools.mjs";
 import { createBroker } from "../control-plane/broker.mjs";
-import { createSessionState, STATES } from "../control-plane/state-machine.mjs";
 
 function newBroker(opts = {}) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rl-regress-"));
-  return createBroker({
-    token: "t",
-    task: "x",
-    transcriptDir: path.join(tmp, "transcripts"),
-    sessionId: "s",
-    skipSkills: true,
-    ...opts,
-  });
+  return createBroker({ task: "x", runDir: tmp, sessionId: "s", skipSkills: true, ...opts });
 }
 
-const envelope = (role, kind, extra = {}) => ({
-  role,
-  kind,
-  goalId: "G1",
-  text: "t",
-  payload: {},
-  ts: Date.now(),
-  ...extra,
-});
+const envelope = (role, kind, payload = {}, agentId = "root") => ({ role, kind, goalId: payload.goalId ?? null, text: "t", payload, ts: Date.now(), agentId });
+const GOAL = { id: "G1", title: "t", description: "d", acceptance: ["a"] };
 
 describe("broker regressions", () => {
   it("caps consecutive invalid handoffs only (an accepted one resets the count)", () => {
     const broker = newBroker({ maxRejections: 2 });
-    broker.start(); // RESEARCHER_DECOMPOSE
-    assert.equal(broker.receiveAgentEnvelope("researcher", envelope("researcher", "result")).ok, false);
-    assert.equal(broker.receiveAgentEnvelope("researcher", envelope("researcher", "proposal")).ok, true);
-    // Invalid in-turn handoff (advisor expected): one rejection after progress must not abort.
-    assert.equal(broker.receiveAgentEnvelope("advisor", envelope("advisor", "result_accepted")).ok, false);
-    assert.notEqual(broker.snapshot().state, STATES.ABORTED);
+    broker.start(); // the advisor plans
+    assert.equal(broker.receiveAgentEnvelope("advisor", envelope("advisor", "approve_subagent")).ok, false);
+    assert.equal(broker.receiveAgentEnvelope("advisor", envelope("advisor", "propose_plan", { goals: [GOAL] })).ok, true);
+    // Invalid in-turn handoff: one rejection after progress must not abort.
+    assert.equal(broker.receiveAgentEnvelope("researcher", envelope("researcher", "proceed")).ok, false);
+    assert.notEqual(broker.snapshot().state, "ABORTED");
     // A second consecutive one hits the cap.
-    broker.receiveAgentEnvelope("advisor", envelope("advisor", "result_accepted"));
-    assert.equal(broker.snapshot().state, STATES.ABORTED);
+    broker.receiveAgentEnvelope("researcher", envelope("researcher", "proceed"));
+    assert.equal(broker.snapshot().state, "ABORTED");
   });
 
   it("refuses out-of-turn handoffs quietly (no correction prompt, not counted)", async () => {
     const broker = newBroker({ maxRejections: 2 });
     broker.start();
-    broker.receiveAgentEnvelope("researcher", envelope("researcher", "proposal"));
     const before = (await broker.poll("researcher", 0, 50)).cursor;
     for (let i = 0; i < 5; i += 1) {
-      const r = broker.receiveAgentEnvelope("researcher", envelope("researcher", "result"));
+      const r = broker.receiveAgentEnvelope("researcher", envelope("researcher", "accept_plan"));
       assert.equal(r.ok, false);
       assert.equal(r.wait, true);
       assert.match(r.error, /not your turn/);
     }
-    assert.notEqual(broker.snapshot().state, STATES.ABORTED);
+    assert.notEqual(broker.snapshot().state, "ABORTED");
     const after = await broker.poll("researcher", before, 50);
     assert.equal(after.messages.length, 0, "no correction prompt for the researcher");
   });
 
-  it("never downgrades a DONE session to ABORTED", () => {
-    const broker = newBroker({ initialState: { ...createSessionState(), state: STATES.DONE } });
+  it("never downgrades a DONE run to ABORTED", () => {
+    const broker = newBroker();
+    broker.start();
+    const send = (role, kind, payload, agentId) => assert.equal(broker.receiveAgentEnvelope(role, envelope(role, kind, payload, agentId)).ok, true);
+    send("advisor", "propose_plan", { goals: [GOAL] });
+    send("researcher", "accept_plan", {});
+    send("researcher", "propose_subagent", { goalId: "G1", mode: "full", instructions: "i", justification: "j" });
+    send("advisor", "approve_subagent", {});
+    send("researcher", "submit_result", { report: "r" }, "S1");
+    send("advisor", "accept_result", {}, "S1");
+    send("researcher", "finish_session", { summary: "done" });
+    broker.humanDecision({ action: "approve" });
+    assert.equal(broker.snapshot().state, "DONE");
     broker.abort("agent exited during shutdown");
-    assert.equal(broker.snapshot().state, STATES.DONE);
+    assert.equal(broker.snapshot().state, "DONE");
     assert.equal(broker.isClosed(), true);
   });
 });

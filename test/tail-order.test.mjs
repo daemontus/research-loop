@@ -16,7 +16,6 @@ describe("live tail ordering", () => {
       task: "x",
       transcriptDir,
       sessionId: "s",
-      goalsPath: path.join(tmp, "GOALS.md"),
       port: 0,
     });
 

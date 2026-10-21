@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 
-import { makeInstallSkillTool } from "../agent/lib/skill-tools.mjs";
+import { installSkill, installSkills } from "../agent/lib/skill-tools.mjs";
 import { parseSkillFrontmatter, renderInstalledSkills, scanSkills } from "../agent/lib/skills.mjs";
 
 function writeSkill(root, dir, name, description) {
@@ -47,10 +47,22 @@ describe("installed skills scanning", () => {
   });
 });
 
-describe("install_skill tool", () => {
+describe("harness skill installer", () => {
   it("rejects an empty source without touching the network", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rl-install-"));
-    const tool = makeInstallSkillTool(tmp);
-    await assert.rejects(() => tool.execute("1", { source: "  " }), /non-empty source/);
+    await assert.rejects(() => installSkill(tmp, { source: "  " }), /source is required/);
+  });
+
+  it("collects failures instead of stopping at the first one", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rl-install-"));
+    const fake = async (_sandbox, spec) => {
+      if (spec.source === "bad/repo") throw new Error("no SKILL.md found");
+      return [{ name: spec.source.split("/")[1], slug: "x", description: "", path: "/sandbox/skills/x/" }];
+    };
+    const result = await installSkills(tmp, [{ source: "bad/repo" }, { source: "good/tdd" }], fake);
+    assert.deepEqual(result.installed.map((s) => s.name), ["tdd"]);
+    assert.equal(result.errors.length, 1);
+    assert.equal(result.errors[0].source, "bad/repo");
+    assert.match(result.errors[0].error, /no SKILL\.md/);
   });
 });

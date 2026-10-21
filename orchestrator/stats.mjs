@@ -185,14 +185,6 @@ function listSkills(dir) {
   }
 }
 
-function readSize(file) {
-  try {
-    return fs.statSync(file).size;
-  } catch {
-    return null;
-  }
-}
-
 function mergeRetries(transcriptRetries, reported) {
   const base = { ...transcriptRetries };
   if (reported) {
@@ -223,6 +215,7 @@ function mergeRetries(transcriptRetries, reported) {
  * @param {Record<string, string>} [opts.agentErrors] per-role fatal message
  * @param {string} opts.transcriptDir
  * @param {string} opts.researcherSandbox
+ * @param {Array<{id: string, status: string}>} [opts.goalTree] the harness's goals (all levels)
  * @param {number} [opts.orchestratorStartedAt]
  * @param {number} [opts.orchestratorFinishedAt]
  */
@@ -237,6 +230,7 @@ export function buildRunStats(opts) {
     agentErrors = {},
     transcriptDir,
     researcherSandbox,
+    goalTree = null,
     orchestratorStartedAt,
     orchestratorFinishedAt,
   } = opts;
@@ -362,9 +356,11 @@ export function buildRunStats(opts) {
       byKind: handoffsByKind,
     },
     goals: {
-      count: goalList.length,
-      ids: goalList,
-      researcherSteps: Number.isFinite(snapshot.researcherSteps) ? snapshot.researcherSteps : null,
+      count: goalTree ? goalTree.length : goalList.length,
+      ids: goalTree ? goalTree.map((g) => g.id) : goalList,
+      byStatus: goalTree
+        ? goalTree.reduce((acc, g) => ({ ...acc, [g.status]: (acc[g.status] || 0) + 1 }), {})
+        : null,
       currentGoalId: snapshot.currentGoalId ?? null,
     },
     humanDecisions: {
@@ -383,7 +379,6 @@ export function buildRunStats(opts) {
     artifacts: {
       count: artifactFiles.length,
       totalBytes: artifactsBytes,
-      goalsMdBytes: readSize(path.join(researcherSandbox, "GOALS.md")),
       files: artifactFiles,
     },
     errors: Object.keys(errors).length ? errors : {},

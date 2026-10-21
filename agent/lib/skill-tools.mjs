@@ -1,18 +1,16 @@
 /**
- * Harness tool: install Agent Skills into the sandbox.
+ * Harness skill installer: installs approved Agent Skills into the sandbox.
  *
- * Wraps the `skills` CLI (skills.sh) so installation is deterministic and lands
- * in `<sandbox>/skills/<slug>/` (the location the harness scans and the advisor
- * can read read-only). The CLI fetches from GitHub/git/well-known/download URLs.
+ * The agent process runs this itself when the control plane asks
+ * (`install_skills`); no model is involved. Wraps the `skills` CLI (skills.sh)
+ * so skills land in `<sandbox>/skills/<slug>/`, where prompts list them.
  */
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { Type } from "typebox";
 
 import { parseSkillFrontmatter } from "./skills.mjs";
 
-const MAX_TOOL_OUTPUT = 40000;
 const INSTALL_TIMEOUT_MS = 600000;
 
 function run(cmd, args, opts = {}) {
@@ -79,109 +77,73 @@ function slugify(value) {
 }
 
 /**
+ * Install one skill source (skills.sh `owner/repo`, a git URL or a download
+ * URL) into `<sandbox>/skills/<slug>/` with the `skills` CLI.
  * @param {string} sandbox writable sandbox root
- * @returns {object} an AgentTool definition
+ * @param {{ source: string, skill?: string|null, name?: string|null }} spec
+ * @returns {Promise<Array<{ name: string, slug: string, description: string, path: string }>>}
  */
-export function makeInstallSkillTool(sandbox) {
+export async function installSkill(sandbox, spec) {
+  const source = String(spec?.source || "").trim();
+  if (!source) throw new Error("a skill source is required");
   const destRoot = path.join(sandbox, "skills");
-  return {
-    name: "install_skill",
-    label: "Install Skill",
-    description:
-      "Install one or more Agent Skills from skills.sh / a git source / a direct download " +
-      "URL into /sandbox/skills/<name>/. Pass the source exactly as skills.sh shows it " +
-      "(e.g. owner/repo, plus optional skill names). After installing, read the SKILL.md " +
-      "files and call confirm_skills_installed. Requires network access.",
-    parameters: Type.Object({
-      source: Type.String({
-        description:
-          "skills.sh source: 'owner/repo', a full git URL, or a direct SKILL.md/archive download URL.",
-      }),
-      skill: Type.Optional(
-        Type.String({
-          description:
-            "Specific skill name(s) within the source, comma-separated; omit to install all discovered.",
-        }),
-      ),
-      name: Type.Optional(
-        Type.String({
-          description: "Override destination folder name (only when installing a single skill).",
-        }),
-      ),
-    }),
-    execute: async (_id, params) => {
-      const source = String(params?.source || "").trim();
-      if (!source) throw new Error("install_skill requires a non-empty source");
-      fs.mkdirSync(destRoot, { recursive: true });
-
-      const tmp = fs.mkdtempSync(path.join(sandbox, ".skills-install-"));
+  fs.mkdirSync(destRoot, { recursive: true });
+  const tmp = fs.mkdtempSync(path.join(sandbox, ".skills-install-"));
+  try {
+    const args = ["--yes", "skills", "add", source, "--copy", "-y", "-a", "universal"];
+    for (const s of String(spec?.skill || "").split(",").map((x) => x.trim()).filter(Boolean)) {
+      args.push("--skill", s);
+    }
+    let output = "";
+    try {
+      const res = await run(process.platform === "win32" ? "npx.cmd" : "npx", args, {
+        cwd: tmp,
+        timeout: INSTALL_TIMEOUT_MS,
+        env: { ...process.env, DISABLE_TELEMETRY: "1" },
+      });
+      output = res.stderr || res.stdout;
+    } catch (e) {
+      output = e.stderr || e.stdout || e.message || String(e);
+    }
+    const folders = walkForSkillDirs(tmp);
+    if (folders.length === 0) {
+      throw new Error(`no SKILL.md found after installing '${source}': ${output.slice(0, 1000)}`);
+    }
+    const installed = [];
+    for (const folder of folders) {
+      const base = spec?.name && folders.length === 1 ? spec.name : path.basename(folder);
+      const slug = slugify(base);
+      const dest = path.join(destRoot, slug);
+      await copyDir(folder, dest);
+      let parsed = { name: "", description: "" };
       try {
-        const args = ["--yes", "skills", "add", source, "--copy", "-y", "-a", "universal"];
-        const skillsList = String(params?.skill || "")
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean);
-        for (const s of skillsList) args.push("--skill", s);
-
-        let stdout = "";
-        let stderr = "";
-        try {
-          const res = await run(process.platform === "win32" ? "npx.cmd" : "npx", args, {
-            cwd: tmp,
-            timeout: INSTALL_TIMEOUT_MS,
-            env: { ...process.env, DISABLE_TELEMETRY: "1" },
-          });
-          stdout = res.stdout;
-          stderr = res.stderr;
-        } catch (e) {
-          stdout = e.stdout || "";
-          stderr = e.stderr || e.message || String(e);
-        }
-
-        const folders = walkForSkillDirs(tmp);
-        if (folders.length === 0) {
-          throw new Error(
-            `install_skill: no SKILL.md found after installing '${source}'. ` +
-              `npx output:\n${(stderr || stdout).slice(0, 2000)}`,
-          );
-        }
-
-        const installed = [];
-        for (const folder of folders) {
-          const base =
-            params?.name && folders.length === 1 ? params.name : path.basename(folder);
-          const slug = slugify(base);
-          const dest = path.join(destRoot, slug);
-          await copyDir(folder, dest);
-          let parsed = { name: "", description: "" };
-          try {
-            parsed = parseSkillFrontmatter(fs.readFileSync(path.join(dest, "SKILL.md"), "utf8"));
-          } catch {
-            // ignore
-          }
-          installed.push({
-            name: parsed.name || slug,
-            slug,
-            description: parsed.description,
-            path: `/sandbox/skills/${slug}/`,
-          });
-        }
-
-        const text = [
-          `Installed ${installed.length} skill(s) into /sandbox/skills/:`,
-          ...installed.map(
-            (s) => `  - ${s.name}${s.description ? `: ${s.description}` : ""} → ${s.path}`,
-          ),
-          "",
-          "Next: read the SKILL.md file(s) you will use, then call confirm_skills_installed",
-          "with the installed list.",
-        ]
-          .join("\n")
-          .slice(0, MAX_TOOL_OUTPUT);
-        return { content: [{ type: "text", text }], details: { installed } };
-      } finally {
-        await removeDir(tmp);
+        parsed = parseSkillFrontmatter(fs.readFileSync(path.join(dest, "SKILL.md"), "utf8"));
+      } catch {
+        // ignore
       }
-    },
-  };
+      installed.push({ name: parsed.name || slug, slug, description: parsed.description, path: `/sandbox/skills/${slug}/` });
+    }
+    return installed;
+  } finally {
+    await removeDir(tmp);
+  }
+}
+
+/**
+ * Install every approved skill; failures are collected, not thrown, so one
+ * bad source does not block the run.
+ * @param {string} sandbox
+ * @param {Array<{ source: string, skill?: string|null, name?: string }>} skills
+ */
+export async function installSkills(sandbox, skills, install = installSkill) {
+  const installed = [];
+  const errors = [];
+  for (const spec of skills || []) {
+    try {
+      installed.push(...(await install(sandbox, spec)));
+    } catch (e) {
+      errors.push({ source: spec?.source || "", skill: spec?.skill || null, error: String(e?.message || e).slice(0, 2000) });
+    }
+  }
+  return { installed, errors };
 }

@@ -8,7 +8,7 @@ import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 
 import { AgentSession, backoffDelay, formatWait, retryAfterMs } from "../agent/lib/agent-runner.mjs";
-import { bindControlTools, researcherControlToolDefs } from "../agent/lib/control-tools.mjs";
+import { bindControlTools, CONTROL_TOOLS_BY_KIND } from "../agent/lib/control-tools.mjs";
 import { makeCredentialStore } from "../agent/lib/model-providers.mjs";
 import { createTranscriptWriter } from "../agent/lib/transcript.mjs";
 
@@ -31,7 +31,7 @@ function makeSession(responses, opts = {}) {
     model: models.getModel("faux", "m1"),
     models,
     systemPrompt: "You are the researcher.",
-    tools: bindControlTools(researcherControlToolDefs(), controller),
+    tools: bindControlTools(CONTROL_TOOLS_BY_KIND.leaf.researcher, controller),
     sandbox: tmp,
     transcript: createTranscriptWriter(transcriptPath, "researcher"),
     controlState,
@@ -54,7 +54,7 @@ function makeSession(responses, opts = {}) {
 
 const plan = () =>
   fauxAssistantMessage(
-    [fauxText("plan"), fauxToolCall("submit_plan", { goalId: "G1", title: "t", plan: ["a"], acceptanceCriteria: ["b"] })],
+    [fauxText("plan"), fauxToolCall("submit_result", { summary: "s", report: "r", notes: "n" })],
     { stopReason: "toolUse" },
   );
 const fail = (errorMessage) => fauxAssistantMessage("", { stopReason: "error", errorMessage });
@@ -89,6 +89,28 @@ describe("outage backoff schedule", () => {
 });
 
 describe("outage retries in a phase", () => {
+  it("waits out a busy provider (KV pool exhausted) instead of failing the phase", async () => {
+    const busy = "the engine failed this request: the KV pool cannot hold it (pool or table exhausted)";
+    const { session, notes } = makeSession([fail(busy), fail(busy), plan()]);
+    await session.start();
+    const { error } = await session.runPrompt("go");
+    assert.equal(error, null);
+    assert.equal(session.takeHandoff()?.kind, "submit_result");
+    assert.equal(session.stats().providerErrorRetries, 2);
+    const retries = notes().filter((n) => n.content.startsWith("provider-error-retry:"));
+    assert.equal(retries.length, 2);
+    assert.match(retries[0].content, /KV pool cannot hold it/);
+    assert.ok(retries.every((n) => n.retryAt > 0), "the UI can show the wait");
+  });
+
+  it("also backs off on errors that look permanent (a human supervises the run)", async () => {
+    const { session } = makeSession([fail("400 Bad Request: unknown parameter"), plan()]);
+    await session.start();
+    const { error } = await session.runPrompt("go");
+    assert.equal(error, null);
+    assert.equal(session.stats().providerErrorRetries, 1);
+  });
+
   it("keeps retrying a transient error with growing waits and recovers", async () => {
     const { session, notes } = makeSession([
       fail("503 Service Unavailable"),
@@ -101,7 +123,7 @@ describe("outage retries in a phase", () => {
     await session.start();
     const { error } = await session.runPrompt("go");
     assert.equal(error, null);
-    assert.equal(session.takeHandoff()?.kind, "proposal");
+    assert.equal(session.takeHandoff()?.kind, "submit_result");
     assert.equal(session.stats().providerErrorRetries, 5, "more than the old cap of 3");
     const retries = notes().filter((n) => n.content.startsWith("provider-error-retry:"));
     assert.equal(retries.length, 5);
@@ -136,7 +158,7 @@ describe("outage retries in a phase", () => {
     const { session } = makeSession([fail(tooLarge), fail(tooLarge), fail(tooLarge), plan()]);
     await session.start();
     assert.equal((await session.runPrompt("go")).error, null);
-    assert.equal(session.takeHandoff()?.kind, "proposal");
+    assert.equal(session.takeHandoff()?.kind, "submit_result");
     const stats = session.stats();
     assert.equal(stats.contextOverflowRetries, 1, "only one compaction");
     assert.equal(stats.providerErrorRetries, 2, "the repeats were waited out");

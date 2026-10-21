@@ -1,437 +1,283 @@
 /**
- * "Control tools" end an agent's phase and produce a handoff envelope.
- *
- * Calling any of these sets the controller's pending handoff; the runner's
- * `shouldStopAfterTurn` sees it, stops the agent loop, and forwards the
- * envelope to the peer via the broker.
+ * "Control tools" end an agent's turn and produce a handoff envelope whose
+ * `kind` is the tool's name. Which tool is allowed when is decided by the
+ * control plane's state machine (control-plane/state-machine.mjs); this module
+ * defines the tools and which session kind/role is offered which of them.
  */
 import { Type } from "typebox";
 
-import { kindForTool } from "./protocol.mjs";
+const text = (description) => Type.String({ description });
+const optText = (description) => Type.Optional(Type.String({ description }));
+const list = (description) => Type.Array(Type.String(), { description });
+const optList = (description) => Type.Optional(Type.Array(Type.String(), { description }));
 
-function strArray(description) {
-  return Type.Optional(Type.Array(Type.String(), { description }));
-}
-
-const PLAN_TITLE = Type.String({ description: "Short goal title." });
-const GOAL_ID = Type.String({
-  description: "Stable goal id from GOALS.md, e.g. G1 or G2.1. Use 'TASK' for task-level.",
-});
-const PLAN_STEPS = Type.Array(Type.String(), {
-  description: "Ordered, concrete plan steps for this goal.",
-});
-const ACCEPTANCE = Type.Array(Type.String(), {
-  description: "Concrete, checkable acceptance criteria the advisor will verify.",
-});
-const SUMMARY = Type.String({ description: "Concise summary of what was done / decided." });
-const FEEDBACK = Type.String({ description: "Short explanation for the researcher." });
-const CHANGES = Type.Array(Type.String(), {
-  description: "Specific, actionable required changes.",
-});
-const ADVISORY = Type.Optional(
-  Type.Array(Type.String(), {
-    description:
-      "Optional, non-blocking recommendations: higher-value directions, alternative " +
-      "approaches, extra analyses. Fire-and-forget — the researcher may adopt or decline " +
-      "them; they must NOT block acceptance.",
-  }),
+const FEEDBACK = text("Short explanation for the other agent.");
+const REQUIRED_CHANGES = list("Specific, actionable changes that are required.");
+const ADVISORY = optList(
+  "Optional, non-blocking recommendations (better directions, extra checks). They never block; the researcher may adopt or decline them.",
 );
 
-/** Plan fields recording who carries out a goal (only when subagents are available). */
-const EXECUTION_FIELDS = {
-  execution: Type.Optional(
-    Type.Union([Type.Literal("self"), Type.Literal("subagent")], {
-      description:
-        "Who executes this goal once approved: 'self' (you, in this conversation) or " +
-        "'subagent' (you delegate it with propose_subagent right after approval). Always set it.",
+const GOAL = Type.Object({
+  id: Type.String({
+    description:
+      "Unique goal id (letters, digits, '.', '_', '-'). Ids may show closeness (G1.1, G1.2); subgoals must start with their goal's id and a dot.",
+  }),
+  title: Type.String({ description: "One-line title." }),
+  description: Type.String({
+    description: "Markdown description, specific enough for a different agent who sees only this goal.",
+  }),
+  acceptance: Type.Array(Type.String(), {
+    description: "Observable outcomes a reviewer can check (not proxies such as 'tests pass').",
+  }),
+  skills: Type.Optional(Type.Array(Type.String(), { description: "Installed skills relevant to this goal." })),
+});
+const GOALS = (description) => Type.Array(GOAL, { description });
+
+/** Every control tool: name -> { label, description, parameters }. */
+export const CONTROL_TOOL_DEFS = {
+  // --- skills session ---
+  propose_skills: {
+    label: "Propose Skills",
+    description:
+      "Propose the Agent Skills to install for this task (found on skills.sh with `npx skills find`). " +
+      "The advisor reviews the set; once approved, the harness installs them for both agents. If no " +
+      "skill is relevant, propose an empty list with `noneNeeded: true` and explain why in `summary`.",
+    parameters: Type.Object({
+      summary: text("Why these skills (or why none)."),
+      noneNeeded: Type.Optional(Type.Boolean({ description: "True only when no skill is relevant." })),
+      skills: Type.Array(
+        Type.Object({
+          name: Type.String({ description: "Skill name." }),
+          source: Type.String({ description: "skills.sh source exactly as shown there, e.g. owner/repo." }),
+          skill: Type.Optional(Type.String({ description: "Skill name within the source, when it holds several." })),
+          why: Type.String({ description: "Why it is relevant to the task." }),
+        }),
+        { description: "Skills to install (empty when noneNeeded)." },
+      ),
     }),
-  ),
-  executionRationale: Type.Optional(
-    Type.String({
-      description:
-        "One or two sentences on why this goal is (or is not) self-contained enough to delegate.",
+  },
+  approve_skills: {
+    label: "Approve Skills",
+    description: "Approve the proposed skills; the harness then installs them for both agents.",
+    parameters: Type.Object({ feedback: FEEDBACK, conditions: optList("Constraints on how the skills may be used.") }),
+  },
+  request_skill_changes: {
+    label: "Request Skill Changes",
+    description: "Send the skill proposal back with what to add, remove or replace.",
+    parameters: Type.Object({ requiredChanges: REQUIRED_CHANGES, feedback: FEEDBACK }),
+  },
+
+  // --- main session: planning ---
+  propose_plan: {
+    label: "Propose Plan",
+    description:
+      "Submit the ordered list of goals for the task. The researcher reviews it; once accepted, each goal is " +
+      "delegated to a subagent in order. Goals are tracked by the harness (there is no goals file).",
+    parameters: Type.Object({
+      goals: GOALS("The goals, in the order they will be worked on."),
+      rationale: text("Why the work is organised this way."),
     }),
-  ),
+  },
+  accept_plan: {
+    label: "Accept Plan",
+    description: "Accept the advisor's plan. You then delegate its first goal.",
+    parameters: Type.Object({ feedback: FEEDBACK }),
+  },
+  request_plan_changes: {
+    label: "Request Plan Changes",
+    description: "Send the plan back to the advisor with specific changes (organisation, clarity, scope).",
+    parameters: Type.Object({ requiredChanges: REQUIRED_CHANGES, feedback: FEEDBACK }),
+  },
+
+  // --- goal loop (main + orchestrator) ---
+  propose_subagent: {
+    label: "Propose Subagent",
+    description:
+      "Delegate the next goal to a subagent (a fresh researcher/advisor pair). `mode: \"full\"`: it implements " +
+      "the goal. `mode: \"split\"`: it works through `subgoals` (ids starting with the goal id), delegating each " +
+      "in turn. The advisor approves or rejects the delegation.",
+    parameters: Type.Object({
+      goalId: Type.String({ description: "The next goal (goals are worked on in order)." }),
+      mode: Type.Union([Type.Literal("full"), Type.Literal("split")], {
+        description: "full = one subagent implements the goal; split = it orchestrates the subgoals.",
+      }),
+      instructions: text(
+        "What the subagent needs besides the goal: context and decisions, relevant paths, constraints, pitfalls.",
+      ),
+      justification: text("Why this scope: why the goal is one sensible unit of work, or why splitting it pays off."),
+      subgoals: Type.Optional(GOALS("Only with mode split: the subgoals, in order (at least two).")),
+    }),
+  },
+  approve_subagent: {
+    label: "Approve Subagent",
+    description: "Approve the delegation; the subagent starts immediately. `conditions` are added to its brief.",
+    parameters: Type.Object({
+      feedback: FEEDBACK,
+      conditions: optList("Constraints the subagent must honour."),
+      advisory: ADVISORY,
+    }),
+  },
+  reject_subagent: {
+    label: "Reject Subagent",
+    description: "Reject the delegation (scope, unclear instructions, poorly formed subgoals) with required changes.",
+    parameters: Type.Object({ requiredChanges: REQUIRED_CHANGES, feedback: FEEDBACK }),
+  },
+  proceed: {
+    label: "Proceed",
+    description: "After reflecting on the last subagent's outcome: continue with the next planned goal.",
+    parameters: Type.Object({ assessment: text("Brief assessment of the outcome and why the plan still holds.") }),
+  },
+  propose_plan_change: {
+    label: "Propose Plan Change",
+    description:
+      "Main session only, during reflection: replace ALL goals that are still planned with a new list (done, " +
+      "aborted and in-progress goals stay). The advisor approves or rejects it. An empty list removes the " +
+      "remaining goals.",
+    parameters: Type.Object({
+      goals: GOALS("The new remaining goals, in order."),
+      rationale: text("What changed and why the plan must change."),
+    }),
+  },
+  approve_plan_change: {
+    label: "Approve Plan Change",
+    description: "Approve the proposed plan change.",
+    parameters: Type.Object({ feedback: FEEDBACK }),
+  },
+  reject_plan_change: {
+    label: "Reject Plan Change",
+    description: "Reject the proposed plan change; the researcher reflects again.",
+    parameters: Type.Object({ feedback: FEEDBACK, requiredChanges: optList("What would make a change acceptable.") }),
+  },
+  finish_session: {
+    label: "Finish Session",
+    description:
+      "When no planned goals are left. Main session: ask the human to approve completion, with a `summary` for " +
+      "the human and `notes`. Orchestrator: hand the result to your advisor's final check, with a `report` for " +
+      "the parent and `notes` for later agents.",
+    parameters: Type.Object({
+      summary: optText("Main session: summary for the human."),
+      report: optText("Orchestrator: report for the parent (what was achieved, evidence, deviations)."),
+      notes: optText("Notes for later agents (gotchas, environment facts)."),
+    }),
+  },
+  abort_session: {
+    label: "Abort Session",
+    description:
+      "Stop this session. Main session: the human confirms. Orchestrator: the session ends as aborted and the " +
+      "parent re-plans; give a `proposal` for how it should continue.",
+    parameters: Type.Object({
+      reason: text("Why the session should stop."),
+      proposal: optText("What the parent should do instead."),
+      report: optText("What was achieved so far."),
+      notes: optText("Notes for later agents."),
+    }),
+  },
+  accept_completion: {
+    label: "Accept Completion",
+    description: "Final check passed: the session's goal is met as a whole.",
+    parameters: Type.Object({ feedback: FEEDBACK, verification: optList("What you checked."), advisory: ADVISORY }),
+  },
+  reject_completion: {
+    label: "Reject Completion",
+    description: "Final check failed: the goal is not met as a whole. The session ends as aborted and the parent re-plans.",
+    parameters: Type.Object({ requiredChanges: REQUIRED_CHANGES, feedback: FEEDBACK }),
+  },
+
+  // --- leaf session ---
+  submit_result: {
+    label: "Submit Result",
+    description: "Hand the achieved goal to the advisor for verification.",
+    parameters: Type.Object({
+      summary: text("What was done."),
+      report: text("Report for the parent: what was achieved, where the artifacts are, how it was verified, deviations."),
+      notes: text("Notes for later agents: gotchas, environment facts, things you wish you had known."),
+      artifacts: optList("Sandbox paths of the produced artifacts."),
+      verification: optList("Commands/checks you ran and their outcome, so the advisor can reproduce them."),
+    }),
+  },
+  request_result_changes: {
+    label: "Request Result Changes",
+    description: "The goal is not met yet: request specific changes or missing evidence.",
+    parameters: Type.Object({ requiredChanges: REQUIRED_CHANGES, feedback: FEEDBACK, advisory: ADVISORY }),
+  },
+  accept_result: {
+    label: "Accept Result",
+    description: "The goal is met: you verified it independently. This ends the session.",
+    parameters: Type.Object({
+      feedback: FEEDBACK,
+      verification: list("How you verified the result (commands, files, checks)."),
+      advisory: ADVISORY,
+    }),
+  },
+  request_abort: {
+    label: "Request Abort",
+    description: "The goal is infeasible or far larger than expected: ask the advisor to end this session as aborted.",
+    parameters: Type.Object({
+      reason: text("Why the goal cannot be completed as specified."),
+      report: text("What was achieved and learned so far."),
+      proposal: optText("How the parent should continue instead."),
+      notes: optText("Notes for later agents."),
+    }),
+  },
+  confirm_abort: {
+    label: "Confirm Abort",
+    description: "Agree that the goal should be aborted. This ends the session.",
+    parameters: Type.Object({ feedback: FEEDBACK }),
+  },
+  reject_abort: {
+    label: "Reject Abort",
+    description: "Disagree: the researcher continues working on the goal.",
+    parameters: Type.Object({ feedback: FEEDBACK }),
+  },
+};
+
+/** Control tools offered to each role, by session kind (mirrors the state machine; checked by a test). */
+export const CONTROL_TOOLS_BY_KIND = {
+  skills: {
+    researcher: ["propose_skills"],
+    advisor: ["request_skill_changes", "approve_skills"],
+  },
+  main: {
+    researcher: ["request_plan_changes", "accept_plan", "propose_subagent", "proceed", "propose_plan_change", "finish_session", "abort_session"],
+    advisor: ["propose_plan", "reject_subagent", "approve_subagent", "reject_plan_change", "approve_plan_change"],
+  },
+  orchestrator: {
+    researcher: ["propose_subagent", "proceed", "finish_session", "abort_session"],
+    advisor: ["reject_subagent", "approve_subagent", "accept_completion", "reject_completion"],
+  },
+  leaf: {
+    researcher: ["submit_result", "request_abort"],
+    advisor: ["request_result_changes", "accept_result", "reject_abort", "confirm_abort"],
+  },
 };
 
 /**
- * Tool definitions for the researcher role.
- * @param {{ canSpawnSubagents?: boolean }} [opts] whether this researcher may
- *   delegate (adds the plan's execution fields; propose_subagent is filtered
- *   by the caller)
+ * Bind control tools to a controller. Calling one records the handoff; the
+ * runner stops the agent loop after the turn and forwards it.
+ * @param {string[]} names
+ * @param {{ setHandoff: (h: object) => boolean }} controller
  */
-export function researcherControlToolDefs({ canSpawnSubagents = true } = {}) {
-  return [
-    {
-      name: "propose_skills",
-      label: "Propose Skills",
-      kind: "skills_proposal",
-      description:
-        "First phase of the session. Search for reusable Agent Skills relevant to the broad " +
-        "task (skills.sh via `npx skills find`, plus any skills already under /config/skills " +
-        "and /sandbox/skills) and propose a set to install for this session. Hand off to the " +
-        "advisor for approval. Call this before any planning. If no skill is genuinely " +
-        "relevant, propose an empty list with `noneNeeded: true` and a justification.",
-      parameters: Type.Object({
-        summary: SUMMARY,
-        noneNeeded: Type.Optional(
-          Type.Boolean({
-            description: "True only if no skill is relevant; explain why in `summary`.",
-          }),
-        ),
-        skills: Type.Array(
-          Type.Object({
-            name: Type.String({ description: "Skill slug/name (e.g. 'tdd')." }),
-            source: Type.String({
-              description: "skills.sh source, e.g. 'owner/repo' or a full URL.",
-            }),
-            url: Type.Optional(Type.String({ description: "skills.sh page URL, if known." })),
-            why: Type.String({ description: "Why this skill is relevant to the task." }),
-            intendedUse: Type.Optional(
-              Type.String({ description: "Which goals/steps you expect to apply it to." }),
-            ),
-          }),
-          {
-            description:
-              "Candidate skills to install. May be empty when noneNeeded is true.",
-          },
-        ),
-      }),
-    },
-    {
-      name: "confirm_skills_installed",
-      label: "Confirm Skills Installed",
-      kind: "skills_ready",
-      description:
-        "After the advisor approves the skill set, install the approved skills into " +
-        "/sandbox/skills (use the install_skill tool) and then call this to report exactly " +
-        "what is installed. Only after this can you start planning. Report the installed " +
-        "skill paths; this is verified against /sandbox/skills.",
-      parameters: Type.Object({
-        installed: Type.Array(
-          Type.Object({
-            name: Type.String({ description: "Installed skill name." }),
-            path: Type.String({ description: "Path under /sandbox/skills/<name>/." }),
-            source: Type.Optional(Type.String({ description: "Where it came from." })),
-          }),
-          { description: "The skills actually installed (empty if none were approved)." },
-        ),
-        notes: Type.Optional(Type.String({ description: "Anything the advisor should know." })),
-      }),
-    },
-    {
-      name: "submit_plan",
-      label: "Submit Plan",
-      kind: "proposal",
-      description:
-        "Submit (or revise) a plan for the current goal and hand off to the advisor for " +
-        "review. Use this to add subgoals OR to fundamentally revise/replace the approach " +
-        "when a goal turns out to be infeasible, under-specified, or better solved " +
-        "differently. Always update GOALS.md first. You may call this again later to revise " +
-        "the plan; set `revisionOf` to the previous plan/goal id and explain the change in " +
-        "`rationale`. List in `skillsToUse` every installed skill the plan relies on and " +
-        "make the plan steps reference them.",
-      parameters: Type.Object({
-        goalId: GOAL_ID,
-        title: PLAN_TITLE,
-        plan: PLAN_STEPS,
-        acceptanceCriteria: ACCEPTANCE,
-        skillsToUse: strArray(
-          "Names of installed skills this plan will apply. Must include every relevant " +
-            "installed skill; the advisor will reject plans that ignore them.",
-        ),
-        parentGoal: Type.Optional(
-          Type.String({ description: "Parent goal id when this is a subgoal (e.g. G2)." }),
-        ),
-        revisionOf: Type.Optional(
-          Type.String({
-            description: "Previous goal/plan id this proposal revises, if any (revision, not new subgoal).",
-          }),
-        ),
-        rationale: Type.Optional(
-          Type.String({
-            description: "Why this plan (or revision) is the right next step / what changed.",
-          }),
-        ),
-        subgoals: Type.Optional(
-          Type.Array(
-            Type.Object({
-              goalId: Type.String({ description: "Subgoal id, e.g. G2.1." }),
-              title: Type.String(),
-              intent: Type.Optional(Type.String()),
-            }),
-            { description: "Optional decomposition of this goal into subgoals." },
-          ),
-        ),
-        ...(canSpawnSubagents ? EXECUTION_FIELDS : {}),
-      }),
-    },
-    {
-      name: "submit_result",
-      label: "Submit Result",
-      kind: "result",
-      description:
-        "Hand a completed (or partial) result for the current approved goal to the advisor " +
-        "for verification. Include exactly what you did, where the artifacts live (paths in " +
-        "the sandbox), and the concrete verification you ran. Update GOALS.md status first.",
-      parameters: Type.Object({
-        goalId: GOAL_ID,
-        summary: SUMMARY,
-        artifacts: strArray("Sandbox-relative paths of the produced artifacts."),
-        verification: strArray(
-          "Commands/tests/measurements you ran and their outcome (so the advisor can reproduce).",
-        ),
-        skillsUsed: strArray(
-          "Names of installed skills you actually applied for this goal (with how). Required " +
-            "whenever an installed skill is relevant; the advisor will reject results that " +
-            "ignore a relevant skill.",
-        ),
-        blockers: strArray("Anything that blocked full completion, if any."),
-        status: Type.Optional(
-          Type.Union([Type.Literal("complete"), Type.Literal("partial"), Type.Literal("blocked")], {
-            description: "Whether the goal is fully complete, partial, or blocked.",
-          }),
-        ),
-      }),
-    },
-    {
-      name: "request_task_completion",
-      label: "Request Task Completion",
-      kind: "task_request",
-      description:
-        "Ask the advisor to sign off that the whole research task is complete. Only after " +
-        "every goal in GOALS.md is done (or explicitly abandoned with justification).",
-      parameters: Type.Object({
-        summary: SUMMARY,
-        deliverables: strArray("Top-level deliverable paths (code, paper, results)."),
-        unfinished: strArray("Any goals intentionally left unfinished, with reasons."),
-      }),
-    },
-    {
-      name: "propose_subagent",
-      label: "Propose Subagent",
-      kind: "subagent_proposal",
-      description:
-        "Propose delegating a self-contained subtask to a SUBAGENT: a fresh researcher/advisor " +
-        "pair with its own context that works in your sandbox while you wait, and returns a " +
-        "written report. The advisor must approve the proposal first (it may reject it with " +
-        "feedback; then revise and propose again, or continue yourself). The subagent sees " +
-        "nothing of your conversation: `instructions` must be complete and self-contained " +
-        "(goal, context, relevant /sandbox paths, constraints, where to put outputs, what the " +
-        "report must contain). Use it for well-scoped work that benefits from a clean context " +
-        "(e.g. a focused investigation, an implementation, an experiment batch).",
-      parameters: Type.Object({
-        title: Type.String({ description: "Short name of the subtask." }),
-        instructions: Type.String({
-          description:
-            "Complete, self-contained instructions for the subagent, written as a human would " +
-            "brief a new collaborator.",
-        }),
-        goalId: Type.Optional(
-          Type.String({ description: "Your goal id (from your GOALS.md) this subtask serves, if any." }),
-        ),
-        rationale: Type.String({
-          description: "Why delegating this to a subagent is better than doing it yourself.",
-        }),
-        expectedOutputs: strArray("What the subagent must produce (files, findings, report content)."),
-      }),
-    },
-  ];
-}
-
-/** Tool definitions for the advisor role. */
-export function advisorControlToolDefs() {
-  return [
-    {
-      name: "approve_skills",
-      label: "Approve Skills",
-      kind: "skills_approved",
-      description:
-        "Approve the skill set the researcher proposed to install (or an empty set if " +
-        "`noneNeeded` is justified). Only approve skills you have checked are relevant and " +
-        "safe (prefer audited, popular skills). The researcher will install them next.",
-      parameters: Type.Object({
-        feedback: FEEDBACK,
-        conditions: strArray("Optional constraints on how the skills may be used."),
-        advisory: ADVISORY,
-      }),
-    },
-    {
-      name: "request_skill_changes",
-      label: "Request Skill Changes",
-      kind: "skills_changes",
-      description:
-        "Send the skill proposal back: add/remove skills, or reject irrelevant/unsafe ones. " +
-        "Be specific about what to change and why.",
-      parameters: Type.Object({
-        requiredChanges: CHANGES,
-        feedback: FEEDBACK,
-      }),
-    },
-    {
-      name: "approve_plan",
-      label: "Approve Plan",
-      kind: "plan_approved",
-      description:
-        "Approve the researcher's proposed/revised plan so they can execute it. Give brief " +
-        "directional feedback. Do not approve a plan you have not read against GOALS.md.",
-      parameters: Type.Object({
-        goalId: GOAL_ID,
-        feedback: FEEDBACK,
-        conditions: strArray("Optional conditions the researcher must honor while executing."),
-        advisory: ADVISORY,
-      }),
-    },
-    {
-      name: "request_plan_changes",
-      label: "Request Plan Changes",
-      kind: "plan_changes",
-      description:
-        "Reject or request changes to the proposed/revised plan. Be specific about what is " +
-        "wrong (scope, feasibility, missing acceptance criteria, unsound method) and what to " +
-        "change.",
-      parameters: Type.Object({
-        goalId: GOAL_ID,
-        requiredChanges: CHANGES,
-        feedback: FEEDBACK,
-        advisory: ADVISORY,
-      }),
-    },
-    {
-      name: "accept_result",
-      label: "Accept Result",
-      kind: "result_accepted",
-      description:
-        "Conclude that the current goal was met after independently verifying the result. " +
-        "This is the only way a goal becomes 'done'. State what you verified and how.",
-      parameters: Type.Object({
-        goalId: GOAL_ID,
-        feedback: FEEDBACK,
-        verification: strArray("How you verified the result (commands, files, checks)."),
-        advisory: ADVISORY,
-      }),
-    },
-    {
-      name: "request_result_changes",
-      label: "Request Result Changes",
-      kind: "result_changes",
-      description:
-        "The goal is not met yet. Request specific changes, missing evidence, or fixes. The " +
-        "researcher continues on the same goal.",
-      parameters: Type.Object({
-        goalId: GOAL_ID,
-        requiredChanges: CHANGES,
-        feedback: FEEDBACK,
-        advisory: ADVISORY,
-      }),
-    },
-    {
-      name: "accept_task_completion",
-      label: "Accept Task Completion",
-      kind: "task_accepted",
-      description:
-        "Agree the whole research task is complete. This escalates to the human for final " +
-        "approval; it does not end the session by itself.",
-      parameters: Type.Object({
-        summary: SUMMARY,
-        feedback: FEEDBACK,
-        caveats: strArray("Known limitations or follow-ups worth recording."),
-      }),
-    },
-    {
-      name: "request_task_changes",
-      label: "Request Task Changes",
-      kind: "task_changes",
-      description:
-        "The task is not complete. Send the researcher back to work with specific remaining " +
-        "gaps.",
-      parameters: Type.Object({
-        requiredChanges: CHANGES,
-        feedback: FEEDBACK,
-        advisory: ADVISORY,
-      }),
-    },
-    {
-      name: "approve_subagent",
-      label: "Approve Subagent",
-      kind: "subagent_approved",
-      description:
-        "Approve the researcher's subagent proposal. The subagent starts immediately with the " +
-        "proposed instructions (plus your `conditions`, which are appended to them); the " +
-        "researcher and you wait until it reports back. Only approve a well-scoped, " +
-        "self-contained subtask whose instructions a fresh agent could follow without the " +
-        "conversation so far.",
-      parameters: Type.Object({
-        feedback: FEEDBACK,
-        conditions: strArray("Optional constraints added to the subagent's instructions."),
-        advisory: ADVISORY,
-      }),
-    },
-    {
-      name: "reject_subagent",
-      label: "Reject Subagent",
-      kind: "subagent_changes",
-      description:
-        "Reject the subagent proposal with feedback (unclear or incomplete instructions, poor " +
-        "scope, better done directly, ...). The researcher may revise and propose again or " +
-        "continue the work itself.",
-      parameters: Type.Object({
-        requiredChanges: CHANGES,
-        feedback: FEEDBACK,
-      }),
-    },
-  ];
-}
-
-/** Skills-phase control tools (not offered to subagents, which skip that phase). */
-export const SKILLS_CONTROL_TOOLS = new Set([
-  "propose_skills",
-  "confirm_skills_installed",
-  "approve_skills",
-  "request_skill_changes",
-]);
-
-/**
- * Bind a set of control-tool definitions to a controller.
- *
- * @param {Array<object>} defs from researcherControlToolDefs()/advisorControlToolDefs()
- * @param {{ setHandoff: (h: object) => void }} controller
- */
-const GOALLESS_TOOLS = new Set([
-  "request_task_completion",
-  "accept_task_completion",
-  "propose_skills",
-  "confirm_skills_installed",
-  "approve_skills",
-  "request_skill_changes",
-  "approve_subagent",
-  "reject_subagent",
-]);
-
-export function bindControlTools(defs, controller) {
-  return defs.map((def) => ({
-    ...def,
-    execute: async (_id, params) => {
-      const goalId =
-        !GOALLESS_TOOLS.has(def.name) && params?.goalId ? String(params.goalId) : null;
-      const accepted = controller.setHandoff({
-        kind: kindForTool(def.name),
-        goalId,
-        payload: { ...params },
-        toolName: def.name,
-      });
-      if (accepted === false) {
-        // Exactly one control tool ends a phase. Refuse the extra call so the
-        // turn stays deterministic (the first handoff stands).
-        throw new Error(
-          `Only one control tool may be called per turn. '${def.name}' was ignored; ` +
-            "the session will proceed with the first handoff you submitted.",
-        );
-      }
-      const message =
-        `Handoff recorded (${kindForTool(def.name)}${goalId ? `, ${goalId}` : ""}). ` +
-        "Your turn ends now; the peer will respond.";
-      return { content: [{ type: "text", text: message }], details: {} };
-    },
-  }));
+export function bindControlTools(names, controller) {
+  return names.map((name) => {
+    const def = CONTROL_TOOL_DEFS[name];
+    if (!def) throw new Error(`unknown control tool: ${name}`);
+    return {
+      name,
+      ...def,
+      execute: async (_id, params) => {
+        const goalId = typeof params?.goalId === "string" ? params.goalId : null;
+        const accepted = controller.setHandoff({ kind: name, goalId, payload: { ...params }, toolName: name });
+        if (accepted === false) {
+          // Exactly one control tool ends a turn; the first one stands.
+          throw new Error(
+            `Only one control tool may be called per turn. '${name}' was ignored; the first handoff you submitted stands.`,
+          );
+        }
+        return {
+          content: [{ type: "text", text: `Handoff recorded (${name}${goalId ? `, ${goalId}` : ""}). Your turn ends now.` }],
+          details: {},
+        };
+      },
+    };
+  });
 }

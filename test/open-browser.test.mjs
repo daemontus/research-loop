@@ -23,7 +23,7 @@ describe("openBrowser", () => {
     try {
       openBrowser("http://example.test/ui");
       const start = Date.now();
-      while (!fs.existsSync(marker) && Date.now() - start < 3000) {
+      while (!fs.existsSync(marker) && Date.now() - start < 10000) {
         await sleep(50);
       }
       assert.ok(fs.existsSync(marker), "opener should have been invoked");

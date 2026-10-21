@@ -331,7 +331,7 @@ export function makeTools(sandbox, opts = {}) {
       label: "Write File",
       description:
         "Write text content to a file in the sandbox (creating parent dirs as needed). " +
-        "Use this to maintain GOALS.md, source files, notes, etc.",
+        "Use this for new files, notes, etc.; prefer edit_file to change existing files.",
       parameters: Type.Object({
         path: Type.String({ description: "Path relative to the sandbox." }),
         content: Type.String({ description: "The full text content to write." }),
@@ -406,6 +406,21 @@ export function makeTools(sandbox, opts = {}) {
   }
 
   if (onTool) onTool(tools);
+  return tools;
+}
+
+/** Read-only file tools (coordinating researchers get only these). */
+const READ_ONLY_TOOLS = new Set(["list_dir", "read_file", "grep", "read_image"]);
+
+/**
+ * Generic tools offered to `role` in a `kind` session: coordinating
+ * researchers (main, orchestrator) only read; the skills researcher also gets
+ * a shell for `npx skills find`; everyone else gets everything.
+ */
+export function genericToolsFor(role, kind, tools) {
+  if (role !== "researcher") return tools;
+  if (kind === "main" || kind === "orchestrator") return tools.filter((t) => READ_ONLY_TOOLS.has(t.name));
+  if (kind === "skills") return tools.filter((t) => READ_ONLY_TOOLS.has(t.name) || t.name === "bash");
   return tools;
 }
 

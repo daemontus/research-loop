@@ -1,86 +1,38 @@
 /**
- * Handoff protocol shared by the agent runner, control plane, and UI.
+ * Handoff envelopes shared by the agent runner, control plane, and UI.
  *
- * A handoff is an envelope:
+ * An agent ends its turn by calling one control tool; the envelope's `kind`
+ * is that tool's name (see control-plane/state-machine.mjs for which tool is
+ * allowed when, and docs/PROTOCOL.md for the protocol).
+ *
  *   {
- *     role: "researcher" | "advisor" | "human",
- *     kind: <one of the *_KINDS below>,
+ *     role: "researcher" | "advisor" | "human" | "control",
+ *     kind: string,          // control tool name, or a control/human kind
  *     goalId: string | null,
- *     text: string,        // the sender's final assistant text
- *     payload: object,     // structured control-tool arguments
+ *     text: string,          // the sender's final assistant text
+ *     payload: object,       // structured control-tool arguments
  *     ts: number,
- *     seq: number,         // assigned by the control plane
- *     agentId?: string,    // which (sub)agent session this belongs to; default "root"
- *     agent?: object       // subagent metadata attached by the control plane
+ *     agentId?: string,      // session this belongs to ("root" by default)
+ *     agent?: object,        // session metadata (kind, brief, ...) from the control plane
+ *     body?: string,         // markdown rendering of the payload (from the control plane)
+ *     next?: string,         // what the receiving agent must do now (from the control plane)
+ *     contextOps?: object[], // context operations to apply before the next phase
  *   }
  */
+import { CONTROL_TOOL_DEFS } from "./control-tools.mjs";
 
-/** Id of the top-level (human-supervised) agent session. */
+/** Id of the main (human-supervised) session. */
 export const ROOT_AGENT_ID = "root";
 
-export const RESEARCHER_KINDS = [
-  "skills_proposal",
-  "skills_ready",
-  "proposal",
-  "result",
-  "task_request",
-  "subagent_proposal",
-];
-export const ADVISOR_KINDS = [
-  "skills_approved",
-  "skills_changes",
-  "plan_approved",
-  "plan_changes",
-  "result_accepted",
-  "result_changes",
-  "task_accepted",
-  "task_changes",
-  "subagent_approved",
-  "subagent_changes",
-];
+/** Every agent control tool. */
+export const CONTROL_TOOL_NAMES = new Set(Object.keys(CONTROL_TOOL_DEFS));
+
 export const HUMAN_KINDS = ["human_message", "human_decision"];
-export const CONTROL_KINDS = ["start", "prompt", "session_done", "abort", "agent_done"];
+export const CONTROL_KINDS = ["start", "prompt", "session_done", "abort", "agent_done", "install_skills"];
+/** Sent by an agent process itself (not a model): the harness installer finished. */
+export const SYSTEM_KINDS = ["skills_installed"];
 
-export const ALL_KINDS = new Set([
-  ...RESEARCHER_KINDS,
-  ...ADVISOR_KINDS,
-  ...HUMAN_KINDS,
-  ...CONTROL_KINDS,
-]);
-
-/** Control tool name -> handoff kind. */
-export const TOOL_TO_KIND = {
-  propose_skills: "skills_proposal",
-  confirm_skills_installed: "skills_ready",
-  approve_skills: "skills_approved",
-  request_skill_changes: "skills_changes",
-  submit_plan: "proposal",
-  submit_result: "result",
-  request_task_completion: "task_request",
-  approve_plan: "plan_approved",
-  request_plan_changes: "plan_changes",
-  accept_result: "result_accepted",
-  request_result_changes: "result_changes",
-  accept_task_completion: "task_accepted",
-  request_task_changes: "task_changes",
-  propose_subagent: "subagent_proposal",
-  approve_subagent: "subagent_approved",
-  reject_subagent: "subagent_changes",
-};
-
-export const CONTROL_TOOL_NAMES = new Set(Object.keys(TOOL_TO_KIND));
-
-export function kindForTool(toolName) {
-  return TOOL_TO_KIND[toolName] || null;
-}
-
-export function isResearcherKind(kind) {
-  return RESEARCHER_KINDS.includes(kind);
-}
-
-export function isAdvisorKind(kind) {
-  return ADVISOR_KINDS.includes(kind);
-}
+export const ALL_KINDS = new Set([...CONTROL_TOOL_NAMES, ...HUMAN_KINDS, ...CONTROL_KINDS, ...SYSTEM_KINDS]);
 
 /**
  * Validate a handoff envelope produced by an agent runner.
@@ -90,12 +42,7 @@ export function validateEnvelope(envelope) {
   if (!envelope || typeof envelope !== "object") {
     return { ok: false, error: "envelope must be an object" };
   }
-  if (
-    envelope.role !== "researcher" &&
-    envelope.role !== "advisor" &&
-    envelope.role !== "human" &&
-    envelope.role !== "control"
-  ) {
+  if (!["researcher", "advisor", "human", "control"].includes(envelope.role)) {
     return { ok: false, error: `invalid role: ${envelope.role}` };
   }
   if (!ALL_KINDS.has(envelope.kind)) {
@@ -113,62 +60,20 @@ export function validateEnvelope(envelope) {
   return { ok: true };
 }
 
-function bulletize(items) {
-  if (!Array.isArray(items)) return [];
-  return items.filter(Boolean).map((x) => `  - ${typeof x === "string" ? x : JSON.stringify(x)}`);
-}
-
-/**
- * Render an inbound envelope into the user prompt handed to the receiving agent.
- * @param {object} envelope
- * @param {object} [opts]
- * @param {string} [opts.goalsSnapshot] current GOALS.md content (researcher->advisor or vice versa)
- * @param {string} [opts.skillsSnapshot] index of installed skills available in the sandbox
- */
-export function renderInbound(envelope, { goalsSnapshot = "", skillsSnapshot = "" } = {}) {
+/** Render an inbound envelope into the user prompt handed to the receiving agent. */
+export function renderInbound(envelope) {
+  const sub = envelope.agentId && envelope.agentId !== ROOT_AGENT_ID ? ` | session=${envelope.agentId}` : "";
   const lines = [
-    `[handoff from ${envelope.role} | kind=${envelope.kind}` +
-      `${envelope.goalId ? ` | goal=${envelope.goalId}` : ""}` +
-      `${envelope.agentId && envelope.agentId !== ROOT_AGENT_ID ? ` | agent=${envelope.agentId}` : ""}]`,
+    `[${envelope.role === "human" ? "message from the human" : `handoff from ${envelope.role}`} | ${envelope.kind}` +
+      `${envelope.goalId ? ` | goal=${envelope.goalId}` : ""}${sub}]`,
     "",
   ];
-  if (envelope.text && envelope.text.trim()) {
-    lines.push(envelope.text.trim(), "");
+  if (envelope.text && envelope.text.trim()) lines.push(envelope.text.trim(), "");
+  if (envelope.body && envelope.body.trim()) {
+    lines.push(envelope.body.trim(), "");
+  } else if (envelope.payload && Object.keys(envelope.payload).length) {
+    lines.push("--- structured payload ---", JSON.stringify(envelope.payload, null, 2), "");
   }
-  lines.push("--- structured payload ---");
-  lines.push(JSON.stringify(envelope.payload ?? {}, null, 2));
-  if (skillsSnapshot && skillsSnapshot.trim()) {
-    lines.push("", "--- installed skills ---", skillsSnapshot.trim());
-  }
-  if (goalsSnapshot && goalsSnapshot.trim()) {
-    lines.push("", "--- current GOALS.md ---", goalsSnapshot.trim());
-  }
-  return lines.join("\n");
-}
-
-/**
- * Human-readable label for a kind (used by the WebUI timeline).
- */
-export function kindLabel(kind) {
-  const labels = {
-    skills_proposal: "Skills proposed",
-    skills_ready: "Skills installed",
-    skills_approved: "Skills approved",
-    skills_changes: "Skill changes requested",
-    proposal: "Plan proposed",
-    result: "Result submitted",
-    task_request: "Task completion requested",
-    plan_approved: "Plan approved",
-    plan_changes: "Plan changes requested",
-    result_accepted: "Result accepted (goal met)",
-    result_changes: "Result changes requested",
-    task_accepted: "Task completion accepted",
-    task_changes: "Task completion changes requested",
-    human_message: "Human message",
-    human_decision: "Human decision",
-    subagent_proposal: "Subagent proposed",
-    subagent_approved: "Subagent approved",
-    subagent_changes: "Subagent rejected",
-  };
-  return labels[kind] || kind;
+  if (envelope.next && envelope.next.trim()) lines.push("--- what to do now ---", envelope.next.trim());
+  return lines.join("\n").trim();
 }

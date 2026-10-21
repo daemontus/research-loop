@@ -4,7 +4,8 @@
  *
  * Creates a run directory, starts the control plane, launches the two agent
  * containers (or local processes with --local), and waits for the human to
- * approve final completion (or for a budget to be exceeded).
+ * approve final completion (or for a budget to be exceeded). The protocol the
+ * agents follow is specified in docs/PROTOCOL.md.
  *
  * Usage:
  *   node orchestrator/run.mjs --task "Design a parallel Apply algorithm for BDDs" \
@@ -17,11 +18,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { startControlPlane } from "../control-plane/server.mjs";
-import {
-  expectedRoleForState,
-  replaySessionLog,
-} from "../control-plane/broker.mjs";
+import { readSessionLog } from "../control-plane/broker.mjs";
 import { STATES } from "../control-plane/state-machine.mjs";
+import { scanSkills } from "../agent/lib/skills.mjs";
+import { resolveThinkingLevel } from "../agent/lib/model-providers.mjs";
+import { agentCodeHash } from "../agent/lib/code-hash.mjs";
 import {
   discoverModelLimits,
   providerForDocker,
@@ -40,13 +41,10 @@ function isLoopbackHost(host) {
 function parseArgs(argv) {
   const args = {
     task: "",
-    taskSet: false,
     taskFile: null,
     initialSandbox: null,
     researcherModel: "einfra:qwen3.8-27b",
-    researcherModelSet: false,
     advisorModel: "einfra:deepseek-v4-flash",
-    advisorModelSet: false,
     config: path.join(REPO_ROOT, "pi_config.json"),
     image: "research-loop-agent:latest",
     runDir: null,
@@ -72,18 +70,25 @@ function parseArgs(argv) {
     open: true,
     discoverModels: true,
     skipSkills: false,
-    // null = unlimited nesting; 0 disables subagents.
+    // null = unlimited nesting (minimum 1: the main session always delegates).
     maxSubagentDepth: null,
-    maxSubagentDepthSet: false,
+    // 0 = unlimited.
+    maxPlanChanges: 0,
+    maxSubagentRejections: 0,
     // How long agents ride out a provider/control-plane outage (backoff).
     retryBudgetMs: 8 * 3600e3,
-    // How strongly the main researcher is steered towards delegating goals.
-    delegation: "optional",
-    delegationSet: false,
     researcherContextWindow: null,
     advisorContextWindow: null,
     researcherMaxTokens: null,
     advisorMaxTokens: null,
+    // Proceed (with a warning) when the agent image's code differs from this checkout.
+    allowStaleImage: false,
+  };
+  // Settings given on the command line (they win over a resumed run's run.json).
+  const explicit = new Set();
+  const set = (key, value) => {
+    args[key] = value;
+    explicit.add(key);
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -92,57 +97,51 @@ function parseArgs(argv) {
       return argv[++i];
     };
     switch (a) {
-      case "--task": args.task = next(); args.taskSet = true; break;
-      case "--task-file": args.taskFile = next(); break;
-      case "--initial-sandbox": args.initialSandbox = next(); break;
-      case "--researcher-model": args.researcherModel = next(); args.researcherModelSet = true; break;
-      case "--advisor-model": args.advisorModel = next(); args.advisorModelSet = true; break;
-      case "--config": args.config = next(); break;
-      case "--image": args.image = next(); break;
-      case "--run-dir": args.runDir = next(); break;
-      case "--resume": args.resume = next(); break;
-      case "--resume-prompt": args.resumePrompt = next(); break;
-      case "--view": args.view = next(); break;
-      case "--host": args.host = next(); break;
-      case "--port": args.port = Number(next()); break;
-      case "--max-handoffs": args.maxHandoffs = Number(next()); break;
-      case "--wallclock-ms": args.wallclockMs = Number(next()); break;
-      case "--max-turns-per-phase": args.maxTurnsPerPhase = Number(next()); break;
-      case "--abort-timeout-ms": args.abortTimeoutMs = Number(next()); break;
-      case "--phase-timeout-ms": args.phaseTimeoutMs = Number(next()); break;
-      case "--thinking": args.thinking = next(); break;
-      case "--platform": args.platform = next(); break;
-      case "--cpu": args.cpu = Number(next()); break;
-      case "--memory": args.memory = next(); break;
-      case "--local": args.local = true; break;
-      case "--docker": args.docker = true; break;
-      case "--faux": args.faux = true; break;
-      case "--auto-approve": args.autoApprove = true; break;
-      case "--no-open": args.open = false; break;
-      case "--no-model-discovery": args.discoverModels = false; break;
-      case "--skip-skills": args.skipSkills = true; args.skipSkillsSet = true; break;
-      case "--provider-retry-budget": args.retryBudgetMs = parseDuration(next(), a); break;
-      case "--delegation": {
-        args.delegation = next();
-        args.delegationSet = true;
-        if (!["optional", "encouraged"].includes(args.delegation)) {
-          throw new Error(`--delegation must be 'optional' or 'encouraged', got ${args.delegation}`);
-        }
-        break;
-      }
+      case "--task": set("task", next()); break;
+      case "--task-file": set("taskFile", next()); break;
+      case "--initial-sandbox": set("initialSandbox", next()); break;
+      case "--researcher-model": set("researcherModel", next()); break;
+      case "--advisor-model": set("advisorModel", next()); break;
+      case "--config": set("config", next()); break;
+      case "--image": set("image", next()); break;
+      case "--run-dir": set("runDir", next()); break;
+      case "--resume": set("resume", next()); break;
+      case "--resume-prompt": set("resumePrompt", next()); break;
+      case "--view": set("view", next()); break;
+      case "--host": set("host", next()); break;
+      case "--port": set("port", Number(next())); break;
+      case "--max-handoffs": set("maxHandoffs", Number(next())); break;
+      case "--wallclock-ms": set("wallclockMs", Number(next())); break;
+      case "--max-turns-per-phase": set("maxTurnsPerPhase", Number(next())); break;
+      case "--abort-timeout-ms": set("abortTimeoutMs", Number(next())); break;
+      case "--phase-timeout-ms": set("phaseTimeoutMs", Number(next())); break;
+      case "--thinking": set("thinking", next()); break; // fallback when a model spec has no ::effort
+      case "--platform": set("platform", next()); break;
+      case "--cpu": set("cpu", Number(next())); break;
+      case "--memory": set("memory", next()); break;
+      case "--local": set("local", true); break;
+      case "--docker": set("docker", true); break;
+      case "--faux": set("faux", true); break;
+      case "--auto-approve": set("autoApprove", true); break;
+      case "--no-open": set("open", false); break;
+      case "--no-model-discovery": set("discoverModels", false); break;
+      case "--skip-skills": set("skipSkills", true); break;
+      case "--provider-retry-budget": set("retryBudgetMs", parseDuration(next(), a)); break;
       case "--max-subagent-depth": {
         const v = next();
-        args.maxSubagentDepth = v === "unlimited" ? null : Number(v);
-        args.maxSubagentDepthSet = true;
-        if (args.maxSubagentDepth !== null && !(Number.isInteger(args.maxSubagentDepth) && args.maxSubagentDepth >= 0)) {
-          throw new Error(`--max-subagent-depth must be a non-negative integer or 'unlimited', got ${v}`);
+        set("maxSubagentDepth", v === "unlimited" ? null : Number(v));
+        if (args.maxSubagentDepth !== null && !(Number.isInteger(args.maxSubagentDepth) && args.maxSubagentDepth >= 1)) {
+          throw new Error(`--max-subagent-depth must be a positive integer or 'unlimited', got ${v}`);
         }
         break;
       }
-      case "--researcher-context-window": args.researcherContextWindow = Number(next()); break;
-      case "--advisor-context-window": args.advisorContextWindow = Number(next()); break;
-      case "--researcher-max-tokens": args.researcherMaxTokens = Number(next()); break;
-      case "--advisor-max-tokens": args.advisorMaxTokens = Number(next()); break;
+      case "--max-plan-changes": set("maxPlanChanges", nonNegativeInt(next(), a)); break;
+      case "--max-subagent-rejections": set("maxSubagentRejections", nonNegativeInt(next(), a)); break;
+      case "--researcher-context-window": set("researcherContextWindow", Number(next())); break;
+      case "--advisor-context-window": set("advisorContextWindow", Number(next())); break;
+      case "--researcher-max-tokens": set("researcherMaxTokens", Number(next())); break;
+      case "--advisor-max-tokens": set("advisorMaxTokens", Number(next())); break;
+      case "--allow-stale-image": set("allowStaleImage", true); break;
       case "--print-jobs": args.printJobs = true; break;
       case "--help":
       case "-h":
@@ -153,19 +152,22 @@ function parseArgs(argv) {
             "  --initial-sandbox <dir>  --config <pi_config.json>",
             "  --local | --docker | --faux",
             "  --no-open  --no-model-discovery  --skip-skills",
-            "  --max-subagent-depth N   limit subagent nesting (0 = no subagents; default unlimited)",
+            "  --max-subagent-depth N   limit subagent nesting (minimum 1; default unlimited)",
+            "  --max-plan-changes N     cap approved plan changes in the main session (default 0 = unlimited)",
+            "  --max-subagent-rejections N  cap rejected delegations per goal (default 0 = unlimited)",
+            "  --allow-stale-image      run even if the image's agent code differs from this checkout",
             "  --provider-retry-budget D  keep retrying a provider/control-plane outage with",
             "                exponential backoff for this long (e.g. 8h, 30m; 0 = no retries; default 8h)",
-            "  --delegation optional|encouraged  steer the main researcher towards delegating",
-            "                goals to subagents (supervisor mode); default optional",
+            "  --thinking LEVEL         reasoning effort for models without ::effort in their spec",
+            "                (off|minimal|low|medium|high|xhigh|max; default medium)",
             "  --researcher-context-window N  --advisor-context-window N",
             "  --researcher-max-tokens N      --advisor-max-tokens N",
             "  --max-handoffs N  --wallclock-ms N  --max-turns-per-phase N",
-            "    (--max-handoffs caps researcher goal steps: proposals + results; 0 = unlimited)",
+            "    (--max-handoffs caps accepted handoffs in the whole run; 0 = unlimited)",
             "  --host <ip>  --port <n>  (WebUI bind address/port; defaults 127.0.0.1 / random)",
             "  --abort-timeout-ms N  --phase-timeout-ms N  (0 = disabled; default 0)",
-            "  --resume <run-id|dir>    continue an interrupted session (fresh containers,",
-            "                sandbox/GOALS.md/transcripts preserved)",
+            "  --resume <run-id|dir>    continue an interrupted session (fresh containers;",
+            "                sandbox, goals and transcripts preserved)",
             "  --resume-prompt <text>   instructions injected when resuming a session",
             "  --view <run-id|dir>      open the WebUI for a finished run without agents",
             "Timeouts are disabled by default so long runs continue; set any to a",
@@ -181,15 +183,52 @@ function parseArgs(argv) {
         }
     }
   }
-  if (!args.task && args.taskFile) {
-    args.task = fs.readFileSync(args.taskFile, "utf8");
-    args.taskSet = true;
-  }
+  if (!args.task && args.taskFile) set("task", fs.readFileSync(args.taskFile, "utf8"));
   if (!args.task.trim() && !args.view && !args.resume) {
     console.error("missing --task (or --task-file)");
     process.exit(2);
   }
+  args.explicit = explicit;
   return args;
+}
+
+/** Arguments that describe one invocation, not the run: never saved or restored. */
+const PER_INVOCATION = new Set([
+  "task",
+  "taskFile",
+  "initialSandbox",
+  "runDir",
+  "resume",
+  "resumePrompt",
+  "view",
+  "printJobs",
+  "open",
+  "explicit",
+]);
+
+/** Every launch setting of a run, as saved in run.json. */
+export function launchSettings(args) {
+  return Object.fromEntries(Object.entries(args).filter(([k]) => !PER_INVOCATION.has(k)));
+}
+
+/**
+ * Restore a run's saved launch settings (--resume / --view), except the ones
+ * given on this command line. Returns the restored keys.
+ */
+export function restoreSettings(args, saved) {
+  const restored = [];
+  for (const [key, value] of Object.entries(saved || {})) {
+    if (PER_INVOCATION.has(key) || !(key in args) || args.explicit?.has(key)) continue;
+    args[key] = value;
+    restored.push(key);
+  }
+  return restored;
+}
+
+function nonNegativeInt(value, flag) {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0) throw new Error(`${flag} expects a non-negative integer, got ${value}`);
+  return n;
 }
 
 /** "8h" / "30m" / "45s" / "1500ms" / "0" -> milliseconds. */
@@ -222,23 +261,9 @@ function readJsonFile(file) {
   }
 }
 
-/** The `start` entry of a run's session log (task, skipSkills), if any. */
+/** The `start` entry of a run's control log (task, skipSkills), if any. */
 function readSessionStart(runDir) {
-  try {
-    const lines = fs.readFileSync(path.join(runDir, "transcripts", "session.jsonl"), "utf8").split("\n");
-    for (const line of lines) {
-      if (!line.includes('"start"')) continue;
-      try {
-        const e = JSON.parse(line);
-        if (e.kind === "start") return e;
-      } catch {
-        // skip malformed lines
-      }
-    }
-  } catch {
-    // no session log
-  }
-  return {};
+  return readSessionLog(runDir).find((e) => e.kind === "start") || {};
 }
 
 /**
@@ -250,14 +275,18 @@ function readRunMeta(runDir) {
   const meta = readJsonFile(path.join(runDir, "session.json"));
   const run = readJsonFile(path.join(runDir, "run.json"));
   const start = readSessionStart(runDir);
+  // run.json of runs started before all settings were saved: the few it had.
+  const legacy = Object.fromEntries(
+    ["researcherModel", "advisorModel", "skipSkills", "maxSubagentDepth", "maxPlanChanges", "maxSubagentRejections"]
+      .filter((k) => run[k] !== undefined)
+      .map((k) => [k, run[k]]),
+  );
   return {
     sessionId: meta.sessionId || run.sessionId || path.basename(runDir),
     task: meta.task || run.task || start.task || "",
-    researcherModel: meta.researcherModel || run.researcherModel || null,
-    advisorModel: meta.advisorModel || run.advisorModel || null,
-    skipSkills: Boolean(meta.skipSkills ?? run.skipSkills ?? start.skipSkills),
-    maxSubagentDepth: run.maxSubagentDepth ?? meta.maxSubagentDepth ?? null,
-    delegation: run.delegation || meta.delegation || null,
+    settings: run.settings || legacy,
+    initialNote: run.initialNote || "",
+    preinstalledSkills: run.preinstalledSkills || [],
     label: meta.label || run.label || "",
     state: meta.state || null,
     uiUrl: meta.uiUrl || "",
@@ -288,125 +317,82 @@ function fauxStep(text, toolName, payload, files = {}) {
   };
 }
 
-/** Scripted offline scenario for --faux (no API keys, no model needed). */
+const fauxGoal = (id, title) => ({
+  id,
+  title,
+  description: `Demo goal ${id}: ${title}.`,
+  acceptance: [`${id.toLowerCase()}.md exists and describes ${title.toLowerCase()}`],
+  skills: [],
+});
+
+/**
+ * Scripted offline scenario for --faux (no API keys, no model needed). Each
+ * process answers its model calls in order, across all sessions it serves:
+ * skills → plan → G1 (leaf S1) → G2 split into G2.1 (S3) and G2.2 (S4) by
+ * orchestrator S2 → finish.
+ */
 function fauxScenario() {
+  const leafResult = (id) =>
+    fauxStep(
+      `Implemented ${id}.`,
+      "submit_result",
+      {
+        summary: `Wrote ${id.toLowerCase()}.md.`,
+        report: `Wrote ${id.toLowerCase()}.md with the demo content.`,
+        notes: "Nothing surprising in the demo environment.",
+        artifacts: [`${id.toLowerCase()}.md`],
+        verification: [`cat ${id.toLowerCase()}.md`],
+      },
+      { [`${id.toLowerCase()}.md`]: `# ${id}\nDemo output.\n` },
+    );
+  const delegate = (goalId, extra = {}) =>
+    fauxStep(`Delegating ${goalId}.`, "propose_subagent", {
+      goalId,
+      mode: "full",
+      instructions: `Write ${goalId.toLowerCase()}.md in /sandbox.`,
+      justification: "A small, self-contained unit of work.",
+      ...extra,
+    });
   return {
     researcher: {
       provider: "faux",
       responses: [
-        fauxStep("No reusable skill is needed for this demo.", "propose_skills", {
-          summary: "none needed",
-          noneNeeded: true,
-          skills: [],
+        fauxStep("No reusable skill is needed for this demo.", "propose_skills", { summary: "none needed", noneNeeded: true, skills: [] }),
+        fauxStep("The plan is clear.", "accept_plan", { feedback: "Clear and well ordered." }),
+        delegate("G1"),
+        leafResult("G1"), // S1
+        fauxStep("G1 is done as planned.", "proceed", { assessment: "G1 met its goal; G2 still makes sense." }),
+        delegate("G2", {
+          mode: "split",
+          instructions: "Draft the approach in two parts.",
+          justification: "The approach has two distinct parts.",
+          subgoals: [fauxGoal("G2.1", "Outline the approach"), fauxGoal("G2.2", "Detail the approach")],
         }),
-        fauxStep("No skills to install.", "confirm_skills_installed", { installed: [] }),
-        fauxStep(
-          "Decomposed task; proposing G1.",
-          "submit_plan",
-          {
-            goalId: "G1",
-            title: "Survey the problem",
-            plan: ["Delegate a background survey to a subagent", "Write notes"],
-            acceptanceCriteria: ["notes.md exists", "summarizes the problem"],
-            execution: "subagent",
-            executionRationale: "The survey is self-contained.",
-          },
-          { "GOALS.md": "# Research task\nDemo\n\n## Goals\n### G1 — Survey the problem [status: in_progress]\n### G2 — Draft an approach [status: proposed]\n" },
-        ),
-        fauxStep("Delegating the background survey.", "propose_subagent", {
-          title: "Background survey",
-          goalId: "G1",
-          instructions: "Survey background for the task and summarize it in agents/S1/survey.md.",
-          rationale: "Self-contained; benefits from a clean context.",
-          expectedOutputs: ["agents/S1/survey.md"],
-        }),
-        // --- subagent S1 (its own conversation in this same process) ---
-        fauxStep(
-          "Subagent: planning the survey.",
-          "submit_plan",
-          {
-            goalId: "G1",
-            title: "Write the survey",
-            plan: ["Write survey.md"],
-            acceptanceCriteria: ["agents/S1/survey.md exists"],
-          },
-          { "agents/S1/GOALS.md": "# Research task\nBackground survey\n\n## Goals\n### G1 — Write the survey [status: in_progress]\n" },
-        ),
-        fauxStep(
-          "Subagent: survey written.",
-          "submit_result",
-          {
-            goalId: "G1",
-            summary: "Wrote agents/S1/survey.md.",
-            artifacts: ["agents/S1/survey.md"],
-            verification: ["cat agents/S1/survey.md"],
-            status: "complete",
-          },
-          { "agents/S1/survey.md": "# Survey\nBackground notes.\n" },
-        ),
-        fauxStep(
-          "Subagent: done.",
-          "request_task_completion",
-          { summary: "Survey done.", deliverables: ["agents/S1/survey.md"] },
-          { "agents/S1/REPORT.md": "# Report\nWrote the background survey to agents/S1/survey.md.\n" },
-        ),
-        // --- back in the main session ---
-        fauxStep("G1 complete.", "submit_result", {
-          goalId: "G1",
-          summary: "Wrote notes.md.",
-          artifacts: ["notes.md"],
-          verification: ["cat notes.md"],
-          status: "complete",
-        }),
-        fauxStep("Proposing G2.", "submit_plan", {
-          goalId: "G2",
-          title: "Draft an approach",
-          plan: ["Draft design", "Add a small prototype"],
-          acceptanceCriteria: ["design.md exists"],
-        }),
-        fauxStep("G2 complete.", "submit_result", {
-          goalId: "G2",
-          summary: "Wrote design.md.",
-          artifacts: ["design.md"],
-          verification: ["cat design.md"],
-          status: "complete",
-        }),
-        fauxStep("All goals complete.", "request_task_completion", {
-          summary: "Task done.",
-          deliverables: ["notes.md", "design.md"],
-        }),
+        delegate("G2.1"), // S2
+        leafResult("G2.1"), // S3
+        fauxStep("G2.1 is done.", "proceed", { assessment: "On track." }), // S2
+        delegate("G2.2"), // S2
+        leafResult("G2.2"), // S4
+        fauxStep("All subgoals are done.", "finish_session", { report: "G2.1 and G2.2 are written.", notes: "Demo only." }), // S2
+        fauxStep("All goals are done.", "finish_session", { summary: "The demo task is complete: g1.md, g2.1.md, g2.2.md.", notes: "Demo only." }),
       ],
     },
     advisor: {
       provider: "faux",
       responses: [
         fauxStep("No skills needed.", "approve_skills", { feedback: "ok" }),
-        fauxStep("Plan is sound.", "approve_plan", { goalId: "G1", feedback: "go" }),
+        fauxStep("Here is the plan.", "propose_plan", {
+          goals: [fauxGoal("G1", "Survey the problem"), fauxGoal("G2", "Draft an approach")],
+          rationale: "Survey first, then draft.",
+        }),
         fauxStep("Well scoped.", "approve_subagent", { feedback: "go", conditions: ["keep it short"] }),
-        // --- subagent S1 ---
-        fauxStep("Plan is sound.", "approve_plan", { goalId: "G1", feedback: "go" }),
-        fauxStep("Verified survey.md.", "accept_result", {
-          goalId: "G1",
-          feedback: "goal met",
-          verification: ["read survey.md"],
-        }),
-        fauxStep("Report is accurate.", "accept_task_completion", { summary: "Survey verified.", feedback: "ok" }),
-        // --- back in the main session ---
-        fauxStep("Verified notes.md.", "accept_result", {
-          goalId: "G1",
-          feedback: "goal met",
-          verification: ["read notes.md"],
-        }),
-        fauxStep("Plan is sound.", "approve_plan", { goalId: "G2", feedback: "go" }),
-        fauxStep("Verified design.md.", "accept_result", {
-          goalId: "G2",
-          feedback: "goal met",
-          verification: ["read design.md"],
-        }),
-        fauxStep("Task looks complete.", "accept_task_completion", {
-          summary: "All goals verified.",
-          feedback: "ok",
-        }),
+        fauxStep("Verified g1.md.", "accept_result", { feedback: "goal met", verification: ["read g1.md"] }), // S1
+        fauxStep("The split is justified.", "approve_subagent", { feedback: "go" }),
+        fauxStep("Well scoped.", "approve_subagent", { feedback: "go" }), // S2
+        fauxStep("Verified g2.1.md.", "accept_result", { feedback: "ok", verification: ["read g2.1.md"] }), // S3
+        fauxStep("Well scoped.", "approve_subagent", { feedback: "go" }), // S2
+        fauxStep("Verified g2.2.md.", "accept_result", { feedback: "ok", verification: ["read g2.2.md"] }), // S4
+        fauxStep("G2 is met as a whole.", "accept_completion", { feedback: "both parts fit together" }), // S2
       ],
     },
   };
@@ -427,62 +413,12 @@ function openBrowser(url) {
   }
 }
 
-/**
- * --view: prefer the root state recorded in session.json (it has the final
- * terminal reason), falling back to the replayed one.
- */
-function replayedRootState(recorded, replayed) {
-  return {
-    ...replayed,
-    state: recorded.state,
-    terminalReason: recorded.terminalReason ?? replayed.terminalReason,
-    finishedAt: recorded.finishedAt ?? replayed.finishedAt,
-    startedAt: recorded.startedAt ?? replayed.startedAt,
-    humanDecisions: recorded.humanDecisions ?? replayed.humanDecisions,
-  };
-}
-
 function modelIdOnly(spec) {
   const raw = String(spec || "");
   const sep = raw.indexOf(":");
   const rest = sep === -1 ? raw : raw.slice(sep + 1);
   const effortSep = rest.lastIndexOf("::");
   return effortSep === -1 ? rest : rest.slice(0, effortSep);
-}
-
-/**
- * Compose the prompt an agent receives when a session is resumed. Stresses that
- * the container is fresh and the environment must be rebuilt from the sandbox.
- */
-function buildResumePrompt({ task, initialState, expected, goal, resumePrompt, agentId = "root" }) {
-  const sub = agentId && agentId !== "root";
-  return [
-    "This session is being RESUMED after an interruption.",
-    "",
-    "## Environment has been recreated",
-    "You are running in a FRESH container. Everything you installed in the previous session",
-    "(packages, tools, skills) is GONE. Everything committed to disk in the sandbox is",
-    "preserved: GOALS.md, source code, notes, and results. First inspect /sandbox to find out",
-    "where things stand, then (re)install whatever you need, then CONTINUE the task — do not",
-    "restart it from the beginning.",
-    "",
-    "## Where we left off",
-    ...(sub
-      ? [
-          `The interruption happened while subagent ${agentId} was running; you are that subagent's`,
-          `${expected || "agent"}. Your subtask instructions are in your system prompt; your goals file is`,
-          `${expected === "advisor" ? "/researcher-sandbox" : "/sandbox"}/agents/${agentId}/GOALS.md.`,
-        ]
-      : []),
-    `The previous session was interrupted in state ${initialState}${goal ? ` on goal ${goal}` : ""}.`,
-    expected
-      ? `You (${expected}) were expected to act next; carry on with that responsibility.`
-      : "Control returns to the human; the session awaits a decision.",
-    ...(resumePrompt ? ["", "## Extra instructions from the human", resumePrompt] : []),
-    "",
-    `## ${sub ? "Overall research task (context)" : "Broad research task"}`,
-    task,
-  ].join("\n");
 }
 
 /** Merge contextWindow/maxTokens into the provider's model entry. */
@@ -574,17 +510,17 @@ async function main() {
   }
   if (resumed || viewing) {
     runMeta = readRunMeta(runDir);
-    if (!args.taskSet) args.task = runMeta.task || "";
-    if (!args.researcherModelSet && runMeta.researcherModel) {
-      args.researcherModel = runMeta.researcherModel;
+    if (!args.explicit.has("task")) args.task = runMeta.task || "";
+    const restored = restoreSettings(args, runMeta.settings);
+    if (resumed && restored.length) {
+      console.log(`[research-loop] restored from run.json: ${restored.map((k) => `${k}=${JSON.stringify(args[k])}`).join(", ")}`);
     }
-    if (!args.advisorModelSet && runMeta.advisorModel) {
-      args.advisorModel = runMeta.advisorModel;
+    if (resumed && !runMeta.settings.image && !args.explicit.has("image")) {
+      console.warn(
+        `[research-loop] warning: the original run's image is unknown (older run.json); using ${args.image} (override with --image)`,
+      );
     }
-    if (!args.skipSkillsSet && runMeta.skipSkills) args.skipSkills = true;
-    if (!args.maxSubagentDepthSet) args.maxSubagentDepth = runMeta.maxSubagentDepth ?? null;
-    if (!args.delegationSet && runMeta.delegation) args.delegation = runMeta.delegation;
-    if ((resumed && !runMeta.researcherModel) || (resumed && !runMeta.advisorModel)) {
+    if (resumed && (!runMeta.settings.researcherModel || !runMeta.settings.advisorModel)) {
       console.warn(
         "[research-loop] warning: models of the original run are unknown; using " +
           `${args.researcherModel} / ${args.advisorModel} (override with --researcher-model/--advisor-model)`,
@@ -626,41 +562,54 @@ async function main() {
     initialNote = `Provided resources copied into /sandbox: ${entries.join(", ")}.`;
     console.log(`[research-loop] seeded researcher sandbox from ${src} (${entries.length} entries)`);
   }
+  if (resumed || viewing) initialNote = runMeta.initialNote || "";
+
+  // Skills shipped with the initial sandbox are installed for both agents: the
+  // advisor gets its own copy (its sandbox is separate).
+  let preinstalledSkills = runMeta?.preinstalledSkills || [];
+  if (!resumed && !viewing) {
+    const skillsDir = path.join(researcherSandbox, "skills");
+    preinstalledSkills = scanSkills([{ dir: skillsDir, prefix: "/sandbox/skills" }]).map((s) => s.name);
+    if (preinstalledSkills.length) {
+      fs.cpSync(skillsDir, path.join(advisorSandbox, "skills"), { recursive: true, force: true });
+      console.log(`[research-loop] preinstalled skills: ${preinstalledSkills.join(", ")}`);
+    }
+  }
 
   const token = randomBytes(24).toString("hex");
-  const goalsPath = path.join(researcherSandbox, "GOALS.md");
-  // Subagent records (instructions, metadata, GOALS snapshot, final report).
-  const agentsDir = path.join(runDir, "agents");
+  // The control-plane log (source of truth for resume/view) and the readable
+  // records live in the run folder, outside every agent mount.
+  const replayEntries = resumed || viewing ? readSessionLog(runDir) : null;
+  const controlOpts = {
+    token,
+    task: args.task,
+    label,
+    runDir,
+    transcriptDir,
+    sessionId,
+    host: args.host,
+    port: args.port,
+    maxHandoffs: args.maxHandoffs,
+    initialNote,
+    skipSkills: args.skipSkills,
+    preinstalledSkills,
+    maxSubagentDepth: args.maxSubagentDepth,
+    maxPlanChanges: args.maxPlanChanges,
+    maxSubagentRejections: args.maxSubagentRejections,
+    // Agents must run this checkout's agent code (catches stale Docker images).
+    expectedCodeHash: agentCodeHash(REPO_ROOT),
+    allowStaleImage: args.allowStaleImage,
+    image: args.local ? null : args.image,
+  };
 
   const configPath = path.isAbsolute(args.config) ? args.config : path.resolve(args.config);
 
   // ---- View-only mode: replay history + final state, no agents/containers. ----
   if (viewing) {
-    const control = await startControlPlane({
-      token,
-      task: args.task,
-      label,
-      transcriptDir,
-      sessionId,
-      goalsPath,
-      host: args.host,
-      port: args.port,
-      maxHandoffs: args.maxHandoffs,
-      initialNote,
-      skipSkills: args.skipSkills,
-      installedSkillsPath: path.join(researcherSandbox, "skills"),
-      researcherSandbox,
-      agentsDir,
-      viewOnly: true,
-      ...(() => {
-        const replayed = replaySessionLog(transcriptDir, { agentsDir });
-        return {
-          seedState: runMeta?.state?.state ? replayedRootState(runMeta.state, replayed.state) : replayed.state,
-          seedAgents: replayed.agents,
-          seedActiveId: replayed.activeId,
-        };
-      })(),
-    });
+    if (!replayEntries.some((e) => e.kind === "start")) {
+      throw new Error(`cannot view ${runDir}: no control log (control/session.jsonl); runs from before protocol v2 need an older version`);
+    }
+    const control = await startControlPlane({ ...controlOpts, replayEntries, viewOnly: true });
     console.log(`[research-loop] viewing session ${sessionId}`);
     console.log(`[research-loop] UI: ${control.url}`);
     if (args.open) openBrowser(control.url);
@@ -699,6 +648,13 @@ async function main() {
     }
   }
 
+  // Reasoning effort per role: the model spec's ::effort, else --thinking.
+  for (const role of ["researcher", "advisor"]) {
+    const r = resolveThinkingLevel(args[`${role}Model`], args.thinking);
+    if (r.error) throw new Error(r.error);
+    console.log(`[research-loop] ${role} reasoning effort: ${r.level} (${r.source})`);
+  }
+
   // Resolve per-model context/output limits (discovery + config + CLI flags).
   const researcherLimits = await resolveRoleProvider(researcherCreds, args.researcherModel, {
     contextWindow: args.researcherContextWindow,
@@ -717,19 +673,16 @@ async function main() {
     console.log(`[research-loop] advisor (${args.advisorModel}): ${advisorLimits.note}`);
   }
 
-  // When resuming, restore the control-plane state from the on-disk session
-  // log so the machines pick up where the previous process left off.
-  let replay = null;
+  // When resuming, the control plane replays its log so the run continues
+  // where the previous process left off.
   if (resumed) {
-    replay = replaySessionLog(transcriptDir, { agentsDir });
-    if (!replay.started) {
+    if (!replayEntries.some((e) => e.kind === "start")) {
       throw new Error(
-        `cannot resume ${runDir}: no usable session log found; start a new run instead`,
+        `cannot resume ${runDir}: no control log (control/session.jsonl); start a new run (runs from before protocol v2 cannot be resumed)`,
       );
     }
-    if (replay.state.state === STATES.DONE) {
-      throw new Error(`session ${sessionId} already completed; use --view to review it`);
-    }
+    const terminal = [...replayEntries].reverse().find((e) => e.kind === "terminal");
+    if (terminal?.status === "done") throw new Error(`session ${sessionId} already completed; use --view to review it`);
   }
 
   // Persist the run's settings up front so a crashed run can still be resumed
@@ -741,64 +694,25 @@ async function main() {
         sessionId,
         label,
         task: args.task,
-        researcherModel: args.researcherModel,
-        advisorModel: args.advisorModel,
-        skipSkills: args.skipSkills,
-        maxSubagentDepth: args.maxSubagentDepth,
-        delegation: args.delegation,
+        initialNote,
+        preinstalledSkills,
+        protocol: 2,
+        // Every launch setting; --resume restores what is not passed again.
+        settings: launchSettings(args),
       },
       null,
       2,
     ),
   );
 
-  const control = await startControlPlane({
-    token,
-    task: args.task,
-    label,
-    transcriptDir,
-    sessionId,
-    goalsPath,
-    host: args.host,
-    port: args.port,
-    maxHandoffs: args.maxHandoffs,
-    initialNote,
-    skipSkills: args.skipSkills,
-    installedSkillsPath: path.join(researcherSandbox, "skills"),
-    viewOnly: resumed,
-    initialState: replay?.state || null,
-    initialResearcherSteps: replay?.researcherSteps || 0,
-    initialAgents: replay?.agents || null,
-    initialActiveId: replay?.activeId || null,
-    initialRootPendingProposal: replay?.rootPendingProposal || null,
-    initialRootLastPlanExecution: replay?.rootLastPlanExecution || null,
-    researcherSandbox,
-    agentsDir,
-    maxSubagentDepth: args.maxSubagentDepth,
-    delegation: args.delegation,
-  });
+  const control = await startControlPlane({ ...controlOpts, replayEntries });
   console.log(`[research-loop] session ${sessionId}${resumed ? " (resumed)" : ""}`);
   console.log(`[research-loop] UI: ${control.url}`);
 
   if (resumed) {
-    const activeId = replay.activeId || "root";
-    const active = activeId === "root" ? { state: replay.state } : replay.agents.find((a) => a.id === activeId);
-    const expected = expectedRoleForState(active.state.state);
-    const goal = active.state.currentGoalId;
-    const resumeText = buildResumePrompt({
-      task: args.task,
-      initialState: active.state.state,
-      expected,
-      goal,
-      resumePrompt: args.resumePrompt,
-      skipSkills: args.skipSkills,
-      agentId: activeId,
-    });
-    control.broker.resume(resumeText);
-    console.log(
-      `[research-loop] resumed in state ${active.state.state}` +
-        `${activeId !== "root" ? ` (subagent ${activeId})` : ""} (${expected || "awaiting human"})`,
-    );
+    const r = control.broker.resume(args.resumePrompt || "");
+    if (!r.ok) throw new Error(`cannot resume: ${r.error}`);
+    console.log(`[research-loop] resumed: session ${r.agentId}, ${r.expecting || "nobody"} to act`);
   }
 
   // Ctrl-C / termination should abort the session and let the cleanup path
@@ -821,9 +735,6 @@ async function main() {
     maxTurnsPerPhase: args.maxTurnsPerPhase,
     abortTimeoutMs: args.abortTimeoutMs,
     phaseTimeoutMs: args.phaseTimeoutMs,
-    skipSkills: args.skipSkills,
-    maxSubagentDepth: args.maxSubagentDepth,
-    delegation: args.delegation,
     retryBudgetMs: args.retryBudgetMs,
   };
 
@@ -1057,7 +968,8 @@ async function main() {
     advisorModel: args.advisorModel,
     skipSkills: args.skipSkills,
     maxSubagentDepth: args.maxSubagentDepth,
-    delegation: args.delegation,
+    maxPlanChanges: args.maxPlanChanges,
+    maxSubagentRejections: args.maxSubagentRejections,
     token,
     state: control.broker.snapshot(),
     agentStats: agentEvents,
@@ -1081,6 +993,7 @@ async function main() {
       agentErrors: agentFatal,
       transcriptDir,
       researcherSandbox,
+      goalTree: control.broker.goalTree().goals,
       orchestratorStartedAt,
       orchestratorFinishedAt: Date.now(),
     });

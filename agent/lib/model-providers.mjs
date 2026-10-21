@@ -33,6 +33,29 @@ export function parseModelSpec(spec) {
   return { providerId, modelId, effort };
 }
 
+/** Thinking levels pi-ai understands (README "Reasoning effort" for what each sends). */
+export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/**
+ * The thinking level an agent runs with: the model spec's `::effort` wins,
+ * then the run-wide fallback (`--thinking`), then "off". Unknown names are an
+ * error (pi-ai would otherwise silently fall back to the model's first level).
+ * @returns {{ level: string, source: "model spec"|"--thinking"|"default" } | { error: string }}
+ */
+export function resolveThinkingLevel(spec, fallback = null) {
+  const parsed = parseModelSpec(spec);
+  if (parsed.error) return { error: parsed.error };
+  const [value, source] = parsed.effort
+    ? [parsed.effort, "model spec"]
+    : fallback
+      ? [fallback, "--thinking"]
+      : ["off", "default"];
+  if (!THINKING_LEVELS.includes(value)) {
+    return { error: `unknown reasoning effort '${value}' (${source} of ${spec}); use one of: ${THINKING_LEVELS.join(", ")}` };
+  }
+  return { level: value, source };
+}
+
 export function makeCredentialStore(credentials) {
   const data = new Map();
   for (const [providerId, value] of Object.entries(credentials || {})) {
@@ -107,6 +130,10 @@ function providerModelsList(providerDef) {
       provider: providerDef.id,
       baseUrl: providerDef.baseUrl,
       reasoning: m.reasoning || false,
+      // Optional per-model tuning of how a thinking level becomes request
+      // parameters (see README, "Reasoning effort").
+      ...(m.thinkingLevelMap ? { thinkingLevelMap: m.thinkingLevelMap } : {}),
+      ...(m.compat ? { compat: m.compat } : {}),
       input: m.input || ["text"],
       cost: {
         input: m.inputCost || 0,

@@ -24,21 +24,18 @@ import path from "node:path";
 
 import { AgentSession, backoffDelay, formatWait } from "./lib/agent-runner.mjs";
 import { clientSessionId } from "./lib/client-identity.mjs";
+import { agentCodeHash } from "./lib/code-hash.mjs";
 import { createBrokerClient } from "./lib/broker-client.mjs";
 import { createPartialStreamer } from "./lib/partial-stream.mjs";
-import {
-  bindControlTools,
-  advisorControlToolDefs,
-  researcherControlToolDefs,
-  SKILLS_CONTROL_TOOLS,
-} from "./lib/control-tools.mjs";
+import { bindControlTools, CONTROL_TOOLS_BY_KIND } from "./lib/control-tools.mjs";
+import { makeGoalTools } from "./lib/goal-tools.mjs";
 import { modelSupportsImages } from "./lib/model-capabilities.mjs";
 import { buildModels, parseModelSpec, resolveModel, assertProviderConfigured } from "./lib/model-providers.mjs";
-import { buildAdvisorPrompt, buildResearcherPrompt } from "./lib/prompts.mjs";
+import { buildSystemPrompt } from "./lib/prompts.mjs";
 import { renderInbound, ROOT_AGENT_ID } from "./lib/protocol.mjs";
-import { scanSkills, renderInstalledSkills } from "./lib/skills.mjs";
-import { makeInstallSkillTool } from "./lib/skill-tools.mjs";
-import { makeTools } from "./lib/tools.mjs";
+import { scanSkills } from "./lib/skills.mjs";
+import { installSkills } from "./lib/skill-tools.mjs";
+import { genericToolsFor, makeTools } from "./lib/tools.mjs";
 import { createTranscriptWriter } from "./lib/transcript.mjs";
 
 function readJobFromStdin() {
@@ -64,35 +61,7 @@ async function loadJob() {
   return JSON.parse(raw);
 }
 
-/** The researcher's GOALS.md for an agent (a subagent keeps its own). */
-function researcherGoalsPath(role, sandbox, extraRoots, subagentId = null) {
-  const rel = subagentId ? path.join("agents", subagentId, "GOALS.md") : "GOALS.md";
-  if (role === "advisor") {
-    const root = (extraRoots || []).find((r) => r.prefix === "/researcher-sandbox");
-    if (root && root.dir) return path.join(root.dir, rel);
-  }
-  return path.join(sandbox, rel);
-}
 
-function readGoalsSnapshot(goalsPath) {
-  try {
-    return fs.readFileSync(goalsPath, "utf8");
-  } catch {
-    return "";
-  }
-}
-
-/** Skill roots visible to this role (sandbox skills; advisor also reads RS). */
-function skillRootsFor(role, sandbox, extraRoots) {
-  const roots = [{ dir: path.join(sandbox, "skills"), prefix: "/sandbox/skills" }];
-  if (role === "advisor") {
-    const rs = (extraRoots || []).find((r) => r.prefix === "/researcher-sandbox");
-    if (rs && rs.dir) {
-      roots.push({ dir: path.join(rs.dir, "skills"), prefix: "/researcher-sandbox/skills" });
-    }
-  }
-  return roots;
-}
 
 async function main() {
   const job = await loadJob();
@@ -137,12 +106,7 @@ async function main() {
   const transcript = createTranscriptWriter(rootTranscriptPath, role, { agentId: ROOT_AGENT_ID });
 
   const supportsImage = modelSupportsImages(model);
-  const skipSkills = Boolean(job.skipSkills);
-  const maxSubagentDepth =
-    job.maxSubagentDepth === null || job.maxSubagentDepth === undefined
-      ? null
-      : Number(job.maxSubagentDepth);
-  const genericTools = makeTools(sandbox, {
+  const genericToolsAll = makeTools(sandbox, {
     configDir,
     prefetchPath,
     extraRoots,
@@ -154,6 +118,8 @@ async function main() {
     role,
     token: job.token,
   });
+  const genericTools = genericToolsAll;
+  const goalTools = makeGoalTools(broker);
 
   // Set once the session is over (done/abort/signal); stops all loops.
   let done = false;
@@ -206,46 +172,29 @@ async function main() {
    * One conversation (AgentSession) per agent: the root session plus any
    * subagent the control plane routes to this process. Created lazily on the
    * first envelope for that agent; subagent metadata rides on its envelopes.
-   * @type {Map<string, { session: AgentSession, controlDefs: object[], transcript: object, goalsPath: string, skillRoots: object[] }>}
+   * @type {Map<string, { agentId: string, kind: string, session: AgentSession, controlNames: string[], transcript: object }>}
    */
   const contexts = new Map();
 
   function createContext(agentId, meta) {
-    const subagent = agentId === ROOT_AGENT_ID ? null : { ...(meta || {}), id: agentId };
-    const depth = subagent?.depth || 0;
-    const canSpawnSubagents =
-      role === "researcher" && (maxSubagentDepth == null || depth + 1 <= maxSubagentDepth);
-    const agentTranscriptPath = subagent
-      ? path.join(path.dirname(rootTranscriptPath), "agents", agentId, `${role}.jsonl`)
-      : rootTranscriptPath;
-    const agentTranscript = subagent
-      ? createTranscriptWriter(agentTranscriptPath, role, { agentId })
-      : transcript;
-    if (subagent && role === "researcher") {
-      fs.mkdirSync(path.join(sandbox, "agents", agentId), { recursive: true });
-    }
-    const systemPrompt =
-      role === "researcher"
-        ? buildResearcherPrompt({
-            sandbox,
-            configDir,
-            supportsImage,
-            task: job.task || "",
-            skipSkills,
-            subagent,
-            canSpawnSubagents,
-            maxSubagentDepth,
-            delegation: job.delegation || "optional",
-          })
-        : buildAdvisorPrompt({
-            sandbox,
-            configDir,
-            supportsImage,
-            task: job.task || "",
-            subagent,
-            delegation: job.delegation || "optional",
-            subagentsEnabled: maxSubagentDepth == null || depth + 1 <= maxSubagentDepth,
-          });
+    const kind = agentId === ROOT_AGENT_ID ? "main" : meta?.kind || "leaf";
+    const child = kind === "orchestrator" || kind === "leaf";
+    const agentTranscriptPath =
+      agentId === ROOT_AGENT_ID
+        ? rootTranscriptPath
+        : path.join(path.dirname(rootTranscriptPath), "agents", agentId, `${role}.jsonl`);
+    const agentTranscript =
+      agentId === ROOT_AGENT_ID ? transcript : createTranscriptWriter(agentTranscriptPath, role, { agentId });
+    const systemPrompt = buildSystemPrompt({
+      role,
+      kind,
+      sessionId: agentId,
+      task: job.task || "",
+      brief: child ? meta?.brief || "" : "",
+      configDir,
+      installedSkills: scanSkills([{ dir: path.join(sandbox, "skills"), prefix: "/sandbox/skills" }]),
+      supportsImage,
+    });
 
     const controlState = { pendingHandoff: null };
     const controller = {
@@ -255,14 +204,12 @@ async function main() {
         return true;
       },
     };
-    const goalsPath = researcherGoalsPath(role, sandbox, extraRoots, subagent ? agentId : null);
-    const skillRoots = skillRootsFor(role, sandbox, extraRoots);
-    const skillTools = role === "researcher" && !subagent ? [makeInstallSkillTool(sandbox)] : [];
-    let controlDefs =
-      role === "researcher" ? researcherControlToolDefs({ canSpawnSubagents }) : advisorControlToolDefs();
-    if (subagent) controlDefs = controlDefs.filter((d) => !SKILLS_CONTROL_TOOLS.has(d.name));
-    if (!canSpawnSubagents) controlDefs = controlDefs.filter((d) => d.name !== "propose_subagent");
-    const tools = [...genericTools, ...skillTools, ...bindControlTools(controlDefs, controller)];
+    const controlNames = CONTROL_TOOLS_BY_KIND[kind]?.[role] || [];
+    const tools = [
+      ...genericToolsFor(role, kind, genericTools),
+      ...(kind === "skills" ? [] : goalTools),
+      ...bindControlTools(controlNames, controller),
+    ];
 
     const session = new AgentSession({
       role,
@@ -271,27 +218,28 @@ async function main() {
       systemPrompt,
       tools,
       sandbox,
-      goalsPath,
       transcript: agentTranscript,
       controlState,
-      thinkingLevel: job.thinkingLevel || resolved.effort || "off",
+      // The model spec's ::effort wins over the run-wide --thinking fallback.
+      thinkingLevel: resolved.effort || job.thinkingLevel || "off",
       maxTurnsPerPhase: job.maxTurnsPerPhase ?? 1000,
       abortTimeoutMs: job.abortTimeoutMs ?? 0,
       phaseTimeoutMs: job.phaseTimeoutMs ?? 0,
       retryBudgetMs,
-      // Each agent is its own provider-side session; the root keeps the
+      // Each session is its own provider-side session; the main one keeps the
       // historical id so resumed runs stay stable.
-      clientSessionId: clientSessionId(job.sessionId || "", subagent ? `${role}:${agentId}` : role),
+      clientSessionId: clientSessionId(job.sessionId || "", agentId === ROOT_AGENT_ID ? role : `${role}:${agentId}`),
     });
     session.start();
     // Stream in-progress thinking/text to the WebUI as it arrives.
     session.partialStreamer = createPartialStreamer((ops) => broker.partial(ops, agentId));
     agentTranscript.write("system", {
-      content: subagent
-        ? `subagent ${agentId} session started (role=${role}, parent=${subagent.parentId}, depth=${depth})`
-        : `agent started (role=${role}, model=${job.model})`,
+      content:
+        agentId === ROOT_AGENT_ID
+          ? `agent started (role=${role}, model=${job.model})`
+          : `${kind} session ${agentId} started (role=${role}, parent=${meta?.parentId ?? "-"}, depth=${meta?.depth ?? 0})`,
     });
-    const ctx = { agentId, session, controlDefs, transcript: agentTranscript, goalsPath, skillRoots };
+    const ctx = { agentId, kind, session, controlNames, transcript: agentTranscript };
     contexts.set(agentId, ctx);
     return ctx;
   }
@@ -304,15 +252,15 @@ async function main() {
   function closeContext(agentId) {
     const ctx = contexts.get(agentId);
     if (!ctx || agentId === ROOT_AGENT_ID) return;
-    ctx.transcript.write("system", { content: `subagent ${agentId} finished`, stats: ctx.session.stats() });
+    ctx.transcript.write("system", { content: `session ${agentId} finished`, stats: ctx.session.stats() });
     ctx.transcript.close();
     contexts.delete(agentId);
   }
 
-  const rootCtx = createContext(ROOT_AGENT_ID, null);
   log(`started role=${role} model=${job.model} sandbox=${sandbox} transcript=${rootTranscriptPath}`);
 
-  await controlPlane("register", () => broker.register());
+  // The control plane refuses agent code that differs from its checkout (a stale image).
+  await controlPlane("register", () => broker.register({ codeHash: agentCodeHash() }));
   await broker.event("registered", { role, model: job.model });
   log(`registered with broker at ${job.brokerUrl}`);
 
@@ -354,7 +302,7 @@ async function main() {
   // Run one phase and guarantee we never silently stall: either a handoff is
   // produced, or a fatal error is thrown (which exits non-zero and aborts).
   const runPhase = async (ctx, prompt) => {
-    const { session, controlDefs, transcript: tx } = ctx;
+    const { session, controlNames, transcript: tx } = ctx;
     const first = await session.runPrompt(prompt);
     if (await tryFinish(ctx)) return;
     const reason = String(first.stopReason || "").toLowerCase();
@@ -371,7 +319,7 @@ async function main() {
       const correction = [
         `Your previous turn ended without a handoff (stopReason=${first.stopReason}).`,
         "Every phase MUST end by calling exactly one control tool:",
-        ...controlDefs.map((d) => `  - ${d.name}`),
+        ...controlNames.map((name) => `  - ${name}`),
         "Continue from where you are and call the appropriate control tool now.",
       ].join("\n");
       const next = await session.runPrompt(correction);
@@ -475,24 +423,50 @@ async function main() {
     notify();
   };
 
+  /** The harness asked this process to install the approved skills (no model involved). */
+  const installApprovedSkills = async (envelope) => {
+    const skills = envelope.payload?.skills || [];
+    transcript.write("system", { content: `installing ${skills.length} approved skill source(s) into ${sandbox}/skills` });
+    const result = await installSkills(sandbox, skills);
+    transcript.write("system", {
+      content:
+        `skills installed: ${result.installed.map((s) => s.name).join(", ") || "(none)"}` +
+        (result.errors.length ? `; failed: ${result.errors.map((e) => e.source).join(", ")}` : ""),
+    });
+    await controlPlane("send", () =>
+      broker.send({
+        role,
+        kind: "skills_installed",
+        goalId: null,
+        text: "",
+        payload: result,
+        ts: Date.now(),
+        agentId: envelope.agentId,
+      }),
+    );
+  };
+
   const handle = async (envelope) => {
     if (envelope.role === "control") {
       if (envelope.kind === "agent_done") {
         closeContext(envelope.agentId);
         return;
       }
+      if (envelope.kind === "install_skills") {
+        await installApprovedSkills(envelope);
+        return;
+      }
       if (envelope.kind === "start" || envelope.kind === "prompt") {
         const ctx = contextFor(envelope);
+        ctx.session.applyContextOps(envelope.contextOps);
         ctx.transcript.write("system", { content: `${envelope.kind} received` });
         await runPhase(ctx, envelope.text || "");
         return;
       }
     }
     const ctx = contextFor(envelope);
-    const prompt = renderInbound(envelope, {
-      goalsSnapshot: readGoalsSnapshot(ctx.goalsPath),
-      skillsSnapshot: renderInstalledSkills(scanSkills(ctx.skillRoots)),
-    });
+    ctx.session.applyContextOps(envelope.contextOps);
+    const prompt = renderInbound(envelope);
     ctx.transcript.write("handoff", {
       direction: "in",
       from: envelope.role,
@@ -536,7 +510,7 @@ async function main() {
     process.exit(1);
   }
 
-  const stats = rootCtx.session.stats();
+  const stats = contexts.get(ROOT_AGENT_ID)?.session.stats() || null;
   transcript.write("system", { content: "agent exiting", stats });
   await broker.event("exiting", stats);
   for (const ctx of contexts.values()) ctx.transcript.close();

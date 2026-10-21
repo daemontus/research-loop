@@ -5,8 +5,8 @@ description: How to find, evaluate, and install reusable Agent Skills from skill
 
 # Skills discovery (skills.sh)
 
-Use this during the **skills phase**, before planning, to decide which reusable
-Agent Skills this session should install.
+Use this in the **skills session** (the first step of a run, before planning)
+to decide which reusable Agent Skills the run should install.
 
 ## Search
 
@@ -32,24 +32,18 @@ Agent Skills this session should install.
 ## Propose
 
 Call `propose_skills` with, for each candidate: `name`, `source` (`owner/repo` or a
-full URL), optional `url`, `why` it is relevant, and `intendedUse`. If nothing is
-genuinely relevant, use `noneNeeded: true` and justify it.
+full URL, exactly as skills.sh shows it), the `skill` name within the source when it
+holds several, and `why` it is relevant. If nothing is genuinely relevant, use
+`noneNeeded: true` and justify it.
 
-## Install (only after the advisor approves)
+## Install
 
-Use the `install_skill` harness tool (it wraps the `skills` CLI and installs into
-`/sandbox/skills/<name>/`):
-
-- `install_skill({ source: "owner/repo", skill: "skill-name" })`
-- or `install_skill({ source: "owner/repo" })` to take all discovered skills.
-
-Then `read_file` each installed `/sandbox/skills/<name>/SKILL.md`, and call
-`confirm_skills_installed` with the installed list. The advisor reads the same
-files at `/researcher-sandbox/skills/...`.
+You do not install anything. Once the advisor approves, the harness installs the
+approved skills into `/sandbox/skills/<name>/` for both agents (it runs the
+`skills` CLI itself) and starts the main session.
 
 ## Use
 
-Installed skills are listed in every subsequent prompt. When a skill is relevant
-to the current goal, read its `SKILL.md` and follow it, list it in the plan's
-`skillsToUse`, and report it in the result's `skillsUsed`. Using a relevant
-installed skill is mandatory.
+Installed skills are listed in every later system prompt, and each goal names the
+skills relevant to it. Before work a skill applies to, read its `SKILL.md` and
+follow it.

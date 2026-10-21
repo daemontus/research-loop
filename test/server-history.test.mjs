@@ -38,7 +38,6 @@ describe("control-plane SSE history", () => {
       task: "task",
       transcriptDir,
       sessionId: "s",
-      goalsPath: path.join(tmp, "GOALS.md"),
       port: 0,
     });
 
@@ -85,7 +84,6 @@ describe("control-plane SSE history", () => {
       task: "x",
       transcriptDir,
       sessionId: "s",
-      goalsPath: path.join(tmp, "GOALS.md"),
       port: 0,
     });
     const base = `http://127.0.0.1:${cp.port}`;
@@ -108,7 +106,6 @@ describe("control-plane SSE history", () => {
       task: "x",
       transcriptDir,
       sessionId: "s",
-      goalsPath: path.join(tmp, "GOALS.md"),
       host: "127.0.0.1",
       port: 0,
     });
@@ -129,7 +126,6 @@ describe("control-plane SSE history", () => {
       task: "x",
       transcriptDir,
       sessionId: "s",
-      goalsPath: path.join(tmp, "GOALS.md"),
       host: "0.0.0.0",
       port: 0,
     });

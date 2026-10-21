@@ -1,11 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import {
-  bindControlTools,
-  advisorControlToolDefs,
-  researcherControlToolDefs,
-} from "../agent/lib/control-tools.mjs";
+import { bindControlTools, CONTROL_TOOL_DEFS, CONTROL_TOOLS_BY_KIND } from "../agent/lib/control-tools.mjs";
+import { actionsForRole, NON_AGENT_ACTIONS, SESSION_KINDS, TRANSITIONS } from "../control-plane/state-machine.mjs";
 
 function makeController() {
   const controlState = { pendingHandoff: null };
@@ -24,41 +21,45 @@ function makeController() {
 describe("control tools", () => {
   it("accepts exactly one control tool and rejects a second in the same turn", async () => {
     const { controlState, controller } = makeController();
-    const tools = bindControlTools(researcherControlToolDefs(), controller);
-    const submitPlan = tools.find((t) => t.name === "submit_plan");
-    const submitResult = tools.find((t) => t.name === "submit_result");
+    const tools = bindControlTools(CONTROL_TOOLS_BY_KIND.main.researcher, controller);
+    const delegate = tools.find((t) => t.name === "propose_subagent");
+    const proceed = tools.find((t) => t.name === "proceed");
 
-    await submitPlan.execute("1", {
-      goalId: "G1",
-      title: "t",
-      plan: ["a"],
-      acceptanceCriteria: ["b"],
-    });
-    assert.equal(controlState.pendingHandoff.kind, "proposal");
+    await delegate.execute("1", { goalId: "G1", mode: "full", instructions: "i", justification: "j" });
+    assert.equal(controlState.pendingHandoff.kind, "propose_subagent");
+    assert.equal(controlState.pendingHandoff.goalId, "G1");
 
-    await assert.rejects(
-      () => submitResult.execute("2", { goalId: "G1", summary: "s" }),
-      /Only one control tool/,
-    );
+    await assert.rejects(() => proceed.execute("2", { assessment: "a" }), /Only one control tool/);
     // The first handoff still stands.
-    assert.equal(controlState.pendingHandoff.kind, "proposal");
+    assert.equal(controlState.pendingHandoff.kind, "propose_subagent");
   });
 
-  it("exposes an optional advisory field on the review tools (non-blocking)", () => {
-    const advisoryKeys = (defs) => {
-      const out = {};
-      for (const def of defs) {
-        const schema = def.parameters?.properties || {};
-        out[def.name] = Boolean(schema.advisory);
+  it("offers each role exactly the tools the state machine allows in its session kind", () => {
+    for (const kind of SESSION_KINDS) {
+      for (const role of ["researcher", "advisor"]) {
+        assert.deepEqual(
+          [...CONTROL_TOOLS_BY_KIND[kind][role]].sort(),
+          [...actionsForRole(kind, role)].sort(),
+          `${kind}/${role}`,
+        );
       }
-      return out;
-    };
-    const advisor = advisoryKeys(advisorControlToolDefs());
-    assert.equal(advisor.approve_skills, true);
-    assert.equal(advisor.approve_plan, true);
-    assert.equal(advisor.request_plan_changes, true);
-    assert.equal(advisor.accept_result, true);
-    assert.equal(advisor.request_result_changes, true);
-    assert.equal(advisor.request_task_changes, true);
+    }
+  });
+
+  it("defines a tool for every agent action, and nothing else", () => {
+    const actions = new Set(TRANSITIONS.map((t) => t.action).filter((a) => !NON_AGENT_ACTIONS.has(a)));
+    assert.deepEqual(Object.keys(CONTROL_TOOL_DEFS).sort(), [...actions].sort());
+  });
+
+  it("coordinating researchers cannot verify or implement; leaf researchers cannot delegate", () => {
+    assert.ok(!CONTROL_TOOLS_BY_KIND.main.researcher.includes("submit_result"));
+    assert.ok(!CONTROL_TOOLS_BY_KIND.leaf.researcher.includes("propose_subagent"));
+    assert.ok(!CONTROL_TOOLS_BY_KIND.orchestrator.researcher.includes("propose_plan_change"));
+  });
+
+  it("keeps the non-blocking advisory field on review tools", () => {
+    for (const name of ["approve_subagent", "accept_result", "request_result_changes", "accept_completion"]) {
+      assert.ok(CONTROL_TOOL_DEFS[name].parameters.properties.advisory, name);
+    }
   });
 });

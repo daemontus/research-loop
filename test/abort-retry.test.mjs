@@ -255,18 +255,34 @@ describe("trimToLastConsistentMessages", () => {
 });
 
 describe("transient provider errors", () => {
-  it("classifies transport drops as retryable but not 429/context-overflow/limits", () => {
-    assert.equal(isTransientProviderError("terminated"), true);
-    assert.equal(isTransientProviderError("socket hang up"), true);
-    assert.equal(isTransientProviderError("fetch failed"), true);
-    assert.equal(isTransientProviderError("HTTP 502 Bad Gateway"), true);
+  it("backs off on every provider failure except 429, context overflow and aborts", () => {
+    for (const msg of [
+      "terminated",
+      "socket hang up",
+      "fetch failed",
+      "HTTP 502 Bad Gateway",
+      "the engine failed this request: the KV pool cannot hold it (pool or table exhausted)",
+      "Monthly usage limit reached",
+      "HTTP 400 Bad Request",
+      "401 invalid api key",
+      "",
+    ]) {
+      assert.equal(isTransientProviderError(msg), true, JSON.stringify(msg));
+    }
+    // These have their own recovery paths.
     assert.equal(isTransientProviderError("HTTP 429 Too Many Requests"), false);
     assert.equal(isTransientProviderError("overloaded capacity"), false);
     assert.equal(isTransientProviderError("maximum context length exceeded"), false);
     assert.equal(isTransientProviderError("Please reduce the number of tokens."), false);
-    assert.equal(isTransientProviderError("Monthly usage limit reached"), false);
     assert.equal(isTransientProviderError("This operation was aborted"), false);
-    assert.equal(isTransientProviderError("HTTP 400 Bad Request"), false);
+    // Nothing failed.
+    assert.equal(isTransientProviderError(null), false);
+    assert.equal(shouldRetryTransientProviderTurn([user("go")], null), false);
+  });
+
+  it("retries an error turn even without an error message", () => {
+    const failed = assistant({ stopReason: "error" });
+    assert.equal(shouldRetryTransientProviderTurn([user("go"), failed]), true);
   });
 
   it("classifies vLLM's never-truncate context rejection as context overflow", () => {
@@ -320,9 +336,7 @@ describe("transient provider errors", () => {
 
   it("falls back to the caught error when no assistant message exists", () => {
     assert.equal(shouldRetryTransientProviderTurn([user("go")], "terminated"), true);
-    assert.equal(
-      shouldRetryTransientProviderTurn([user("go")], "HTTP 400 Bad Request"),
-      false,
-    );
+    assert.equal(shouldRetryTransientProviderTurn([user("go")], "HTTP 400 Bad Request"), true);
+    assert.equal(shouldRetryTransientProviderTurn([user("go")], "maximum context length exceeded"), false);
   });
 });

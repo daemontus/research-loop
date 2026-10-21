@@ -15,7 +15,7 @@ import {
 
 import { AgentSession } from "../agent/lib/agent-runner.mjs";
 import { createBrokerClient } from "../agent/lib/broker-client.mjs";
-import { bindControlTools, researcherControlToolDefs } from "../agent/lib/control-tools.mjs";
+import { bindControlTools, CONTROL_TOOLS_BY_KIND } from "../agent/lib/control-tools.mjs";
 import { makeCredentialStore } from "../agent/lib/model-providers.mjs";
 import { createPartialStreamer } from "../agent/lib/partial-stream.mjs";
 import { createTranscriptWriter } from "../agent/lib/transcript.mjs";
@@ -82,7 +82,7 @@ describe("partial streamer", () => {
       model: models.getModel("faux", "m1"),
       models,
       systemPrompt: "You are the researcher.",
-      tools: bindControlTools(researcherControlToolDefs(), controller),
+      tools: bindControlTools(CONTROL_TOOLS_BY_KIND.leaf.researcher, controller),
       sandbox: tmp,
       transcript: createTranscriptWriter(path.join(tmp, "researcher.jsonl"), "researcher"),
       controlState,
@@ -93,12 +93,7 @@ describe("partial streamer", () => {
         [
           fauxThinking("Let me think about this."),
           fauxText("Here is my plan."),
-          fauxToolCall("submit_plan", {
-            goalId: "G1",
-            title: "Goal",
-            plan: ["a"],
-            acceptanceCriteria: ["b"],
-          }),
+          fauxToolCall("submit_result", { summary: "s", report: "r", notes: "n" }),
         ],
         { stopReason: "toolUse" },
       ),
@@ -112,7 +107,7 @@ describe("partial streamer", () => {
     assert.equal(ops[0].op, "start");
     assert.equal(text("thinking"), "Let me think about this.");
     assert.equal(text("text"), "Here is my plan.");
-    assert.ok(ops.some((o) => o.op === "tool" && o.name === "submit_plan"));
+    assert.ok(ops.some((o) => o.op === "tool" && o.name === "submit_result"));
     assert.equal(ops.filter((o) => o.op === "end").length, ops.filter((o) => o.op === "start").length);
   });
 });
@@ -127,7 +122,6 @@ describe("control-plane partial relay", () => {
       task: "x",
       transcriptDir,
       sessionId: "s",
-      goalsPath: path.join(tmp, "GOALS.md"),
       port: 0,
     });
     try {

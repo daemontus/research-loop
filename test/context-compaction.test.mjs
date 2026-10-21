@@ -6,7 +6,9 @@ import { describe, it } from "node:test";
 
 import {
   COMPACTION_MARKER_PREFIX,
+  TOOL_CALLS_PRUNED,
   TOOL_OUTPUT_OMITTED,
+  pruneToolCalls,
   buildCompactionUserMessage,
   buildSandboxSnapshot,
   compactMessages,
@@ -180,12 +182,14 @@ describe("helpers", () => {
     const text = buildCompactionUserMessage({
       compactionIndex: 2,
       stopReason: "length",
-      sandboxSnapshot: "- GOALS.md: missing",
+      sandboxSnapshot: "- workspace: empty",
     });
     assert.ok(text.startsWith(`${COMPACTION_MARKER_PREFIX}2]`));
     assert.ok(text.includes("stopReason: length"));
-    assert.ok(text.includes("GOALS.md: missing"));
-    assert.ok(text.includes("Continue the research task"));
+    assert.ok(text.includes("workspace: empty"));
+    assert.ok(text.includes("list_goals / read_goal"));
+    assert.ok(text.includes("Continue with your current step"));
+    assert.ok(!text.includes("GOALS.md"), "there is no goals file any more");
   });
 
   it("lastAssistantStopReason and lastAssistantReasoning", () => {
@@ -205,18 +209,37 @@ describe("helpers", () => {
     assert.equal(lastAssistantReasoning(messages), "r2");
   });
 
-  it("buildSandboxSnapshot lists GOALS.md and workspace entries", () => {
+  it("buildSandboxSnapshot lists workspace entries", () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "compaction-snap-"));
     fs.mkdirSync(path.join(tmp, "src"));
-    fs.writeFileSync(
-      path.join(tmp, "GOALS.md"),
-      "# Task\n### G1 - x [status: done]\n### G2 - y [status: in_progress]\n",
-    );
     fs.writeFileSync(path.join(tmp, "src", "apply.rs"), "fn main() {}\n");
     const snap = buildSandboxSnapshot(tmp, fs, path);
-    assert.ok(snap.includes("GOALS.md: present (2 goals"));
-    assert.ok(snap.includes("done=1"));
     assert.ok(snap.includes("src/apply.rs"));
+    assert.ok(!snap.includes("GOALS.md"));
+  });
+
+  it("pruneToolCalls keeps only the last call of the named tools (and its result)", () => {
+    const call = (id, name) => ({ type: "toolCall", id, name, arguments: {} });
+    const result = (id) => ({ role: "toolResult", toolCallId: id, content: [{ type: "text", text: `out ${id}` }] });
+    const messages = [
+      { role: "user", content: "plan the task" },
+      { role: "assistant", content: [{ type: "thinking", thinking: "look around" }, call("1", "bash")] },
+      result("1"),
+      { role: "assistant", content: [{ type: "text", text: "first draft" }, call("2", "propose_plan")] },
+      result("2"),
+      { role: "user", content: "changes requested" },
+      { role: "assistant", content: [{ type: "thinking", thinking: "revise" }, call("3", "read_file"), call("4", "propose_plan")] },
+      result("3"),
+      result("4"),
+    ];
+    const out = pruneToolCalls(messages, ["propose_plan", "accept_plan"]);
+    const calls = out.flatMap((m) => (m.role === "assistant" ? m.content.filter((c) => c.type === "toolCall").map((c) => c.id) : []));
+    assert.deepEqual(calls, ["4"], "only the last propose_plan call survives");
+    assert.deepEqual(out.filter((m) => m.role === "toolResult").map((m) => m.toolCallId), ["4"]);
+    // Reasoning and messages stay; an emptied assistant turn gets a placeholder.
+    assert.deepEqual(out[1].content, [{ type: "thinking", thinking: "look around" }, { type: "text", text: TOOL_CALLS_PRUNED }]);
+    assert.equal(out[2].content[0].text, "first draft");
+    assert.equal(out.filter((m) => m.role === "user").length, 2);
   });
 });
 

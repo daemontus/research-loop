@@ -7,7 +7,6 @@
  * Agent.continue() so the next request replays from the last user or complete
  * tool-result message — never from partial content.
  */
-import { isRetryableAssistantError } from "@earendil-works/pi-ai";
 
 /** @param {string | undefined | null} stopReason */
 export function isAbortStop(stopReason) {
@@ -94,26 +93,30 @@ export function shouldRetryContextOverflow(messages, caughtError = null) {
 }
 
 /**
- * A transient provider/transport failure that is safe to retry from the last
- * consistent point (e.g. undici's "terminated", "socket hang up", 5xx). This
- * reuses pi-ai's provider retry classification, but excludes the cases that
- * have their own recovery path: HTTP 429 (rate-limit retry) and context
- * overflow (compaction).
+ * A provider failure to wait out with exponential backoff and retry from the
+ * last consistent point: every failure except the ones with their own
+ * recovery path, i.e. HTTP 429 (rate-limit retry, honours retry-after),
+ * context overflow (compaction) and aborts (abort retry; an abort may also
+ * mean the session is shutting down). Deliberately broad: providers word
+ * temporary trouble in many ways (5xx, dropped streams, "KV pool exhausted"
+ * while the GPUs are busy, ...), and a run is supervised, so a genuinely
+ * permanent error only costs waiting until the retry budget runs out.
  * @param {unknown} error
  */
 export function isTransientProviderError(error) {
+  if (error === null || error === undefined) return false;
   const text = errorText(error);
-  if (!text) return false;
   if (isHttp429(text)) return false;
   if (isContextOverflowError(text)) return false;
-  return isRetryableAssistantError({ stopReason: "error", errorMessage: text });
+  if (isAbortError(text)) return false;
+  return true;
 }
 
 /** @param {any} message */
 export function isTransientProviderAssistant(message) {
   if (!message || message.role !== "assistant") return false;
   if (String(message.stopReason || "").toLowerCase() !== "error") return false;
-  return isTransientProviderError(message.errorMessage);
+  return isTransientProviderError(message.errorMessage ?? "");
 }
 
 /**

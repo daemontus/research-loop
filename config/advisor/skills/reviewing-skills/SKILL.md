@@ -19,11 +19,10 @@ verify they used what was approved. You can read the installed skills at
 - Approve (`approve_skills`) with conditions, or `request_skill_changes` to
   add/remove/replace skills. Only accept `noneNeeded` with a solid justification.
 
-## When reviewing plans and results
+## When planning, delegating and verifying
 
-- A plan must list the relevant installed skills in `skillsToUse` and reference
-  them in its steps. Reject (`request_plan_changes`) plans that ignore a relevant
-  installed skill.
-- A result must report `skillsUsed` with how each skill was applied. If a relevant
-  installed skill was ignored, reject (`request_result_changes`).
+- Each goal lists the installed skills relevant to it (`skills`). When writing
+  the plan or reviewing a delegation, check that relevant skills are listed.
+- When verifying a result, check that the goal's skills were actually applied; if
+  a relevant skill was ignored, reject (`request_result_changes`).
 - Read the actual `SKILL.md` to judge whether the researcher followed it.

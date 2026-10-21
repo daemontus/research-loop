@@ -2,14 +2,16 @@
 
 A two-agent research assistant built on [`@earendil-works/pi-agent-core`](https://github.com/earendil-works/pi).
 
-A **researcher** agent decomposes a broad research task, proposes plans, executes
-them, and reports results. An **advisor** agent reviews every plan before it is
-executed and verifies every result before a goal is considered met. The loop runs
-until a human approves final task completion.
+A research loop of **researcher** and **advisor** agents. The human's task is
+planned as an ordered list of goals; every goal is delegated to a **subagent**
+(a fresh researcher/advisor pair), which either implements it (a *leaf*) or
+splits it into subgoals that it delegates in turn (an *orchestrator*). Advisors
+approve plans and delegations and verify results; a human approves final
+completion.
 
-Both agents run as long-lived, separately sandboxed Docker containers and alternate
-turns through a host-side control plane. Each container keeps running for the whole
-session, so installed tools and conversation state persist between handoffs.
+Both agents run as long-lived, separately sandboxed Docker containers and take
+turns through a host-side control plane. Each container serves every session
+of the run (one conversation per session), so installed tools persist.
 
 ```
                               host
@@ -18,8 +20,8 @@ session, so installed tools and conversation state persist between handoffs.
         │    start containers · budgets · cleanup               │
         ├───────────────────────────────────────────────────────┤
         │  control plane (server.mjs)                           │
-        │    HTTP broker (long-poll inbox) · state machine      │
-        │    SSE transcript stream · WebUI · session audit      │
+        │    protocol engine (sessions, goals) · broker inbox   │
+        │    SSE transcript stream · WebUI · control log        │
         └───────┬───────────────────────────────────┬───────────┘
                 │ host.docker.internal              │
    ┌────────────▼─────────────┐        ┌────────────▼─────────────┐
@@ -31,163 +33,99 @@ session, so installed tools and conversation state persist between handoffs.
    └──────────────────────────┘        └──────────────────────────┘
 ```
 
-## Turn-taking protocol
+## Protocol
 
-Each agent works in phases. A phase ends only when the agent calls a **control
-tool** (which sets a handoff and stops the agent loop). The runner then sends an
-envelope to the broker, which validates the transition and routes it to the peer.
+The full specification, with state diagrams and the transition table the
+control plane enforces, is in [docs/PROTOCOL.md](docs/PROTOCOL.md). In short:
 
-| Researcher control tool | Advisor control tool | Meaning |
+| Session | Researcher | Advisor |
 |---|---|---|
-| `submit_plan` | `approve_plan` / `request_plan_changes` | plan review |
-| `submit_result` | `accept_result` / `request_result_changes` | result review |
-| `request_task_completion` | `accept_task_completion` / `request_task_changes` | task sign-off |
-| `propose_subagent` | `approve_subagent` / `reject_subagent` | delegate a subtask (see [Subagents](#subagents)) |
+| `skills` (first, optional) | proposes Agent Skills | approves them; the harness installs them for both agents |
+| `main` | reviews the plan, delegates each goal, reflects after each one | writes the plan, approves delegations and plan changes |
+| `orchestrator` | delegates each subgoal, reflects | approves delegations; final check that the goal is met as a whole |
+| `leaf` | implements the goal | verifies the result |
 
-```
-RESEARCHER_DECOMPOSE → ADVISOR_REVIEW_PLAN → RESEARCHER_EXECUTE
-        ↑                                            │
-        │                      ADVISOR_REVIEW_RESULT ←┘
-        │                              │
-        └────────── accept_result ─────┘
-                                       │
-        request_task_completion → ADVISOR_REVIEW_TASK → AWAITING_HUMAN → DONE
-```
-
-`submit_plan` may be called at any time, not just for subdivision: the researcher
-can **revise** scope, method, acceptance criteria, or replace a goal entirely
-(set `revisionOf` + `rationale`). This lets it escape infeasible or
-under-specified goals instead of forcing an approach that no longer fits.
-
-Illegal transitions are rejected by the state machine and answered with a
-correction prompt, so a confused model cannot deadlock the session.
-
-## GOALS.md
-
-The researcher owns `GOALS.md` in its sandbox; the advisor reads it (read-only).
-Goals have stable ids and statuses:
-
-```markdown
-# Research task
-<task>
+- Every turn ends with exactly one **control tool**; each message from the
+  harness says which ones are allowed at that point ("what to do now"), and
+  anything else is rejected with a correction prompt.
+- Only leaf researchers can change files (bash, write and edit tools).
+  Researchers of `main` and `orchestrator` sessions only have read-only file
+  tools: they coordinate.
+- A leaf has no separate plan step: its goal and the parent's instructions were
+  approved one level up, so it works, submits a result (with a report for the
+  parent and notes for later agents) and the advisor verifies it. It may ask to
+  abort an infeasible goal.
+- After every subagent the parent researcher **reflects**: proceed to the next
+  goal, change the remaining plan (main session only, the advisor signs off),
+  finish, or abort. An orchestrator cannot change its subgoals; it aborts with a
+  proposal and its parent re-plans.
+- When the main plan is accepted, both main-session contexts are pruned to the
+  accepted plan (tool calls and outputs are dropped, reasoning stays).
 
 ## Goals
-### G1 — Survey prior work [status: done]
-- intent: ...
-- acceptance criteria:
-  - ...
-- subgoals: G1.1, G1.2
-- artifacts: notes/survey.md
-### G2 — Draft an approach [status: in_progress]
-...
-```
 
-The WebUI shows the live `GOALS.md`.
+Goals are owned by the control plane, not by a file. Each has an id (unique in
+the run; subgoal ids start with their goal's id, e.g. `G2.1`), a title, a
+markdown description written for a different agent, acceptance criteria
+(observable outcomes, treated as a floor, not as the definition of done), the
+relevant skills, and a status (`planned`, `in_progress`, `done`, `aborted`).
+When a goal ends it records the subagent's report, notes and the advisor's
+verdict. Agents read goals with the `list_goals` / `read_goal` tools and change
+them only through control tools; every new subagent gets the notes of the goals
+finished before it at the same level.
+
+The run folder keeps readable views: `goals.md` (current tree, regenerated on
+every change), `plans/<session>/v<N>.{md,json}` (every plan version) and
+`agents/<id>/` (brief, report, notes).
 
 ## Subagents
 
-The researcher can delegate a self-contained subtask with `propose_subagent`
-(from the planning or execution phase), briefing it like a human would brief a
-new collaborator (`title`, `instructions`, `rationale`, optional `goalId` and
-`expectedOutputs`). The advisor approves it (`approve_subagent`, optionally
-adding `conditions` that are appended to the instructions) or rejects it with
-feedback (`reject_subagent`), after which the researcher revises or carries on.
+Every goal is delegated with `propose_subagent` (`mode: "full"` or
+`"split"` with subgoals, plus instructions and a justification of the scope)
+and approved by the advisor with a focus on scope. Subagents run **one at a
+time**: the parent is paused until its child finishes, then reflects. Each
+subagent starts with a fresh context holding the task, the chain of goals above
+it, its goal, the parent's instructions, the approving advisor's conditions and
+its siblings' notes. A child runs in the same containers as its parent (same
+`/sandbox`, same tools and model) as a separate conversation.
 
-Delegation is part of planning: when subagents are available, every
-`submit_plan` records who executes the goal (`execution: "self" | "subagent"`
-plus a short `executionRationale`), and the advisor reviews that choice like
-the rest of the plan. After a `subagent` plan is approved, the researcher
-proposes the subagent for that goal, and when the report comes back it
-integrates the outcome and submits the goal's result as usual. Because the
-system prompt is far back in a long context, the control plane also appends a
-one-line reminder to the researcher's prompt at decision points (a `subagent`
-plan was approved; a goal was accepted, a subagent reported back, or completion
-was sent back), as long as it may still delegate.
-
-`--delegation encouraged` turns on **supervisor mode** for the main session:
-its researcher is told to plan, delegate, integrate and verify, delegating
-every substantial self-contained goal by default, and its advisor requests plan
-changes when such a goal is planned as `self` without a good reason. The
-default (`optional`) still asks for the per-goal decision but leaves it to
-judgment. Subagents are never put in supervisor mode.
-
-An approved subagent is a fresh researcher/advisor pair that follows the same
-plan/result review loop as the main session, with its own context and its own
-provider session id. It skips the skills phase and human sign-off: when its
-advisor accepts task completion, the subagent ends and its report goes back to
-the parent researcher, which continues in the phase it proposed from. The
-parent's advisor receives the report as a note with its next handoff. Advisors
-cannot start subagents.
-
-- **Sequential**: while a subagent runs, its parent (both roles) is paused;
-  exactly one agent session is active at a time.
-- **Recursive**: subagents can propose their own subagents. Nesting is
-  unlimited by default; `--max-subagent-depth N` caps it (`0` disables
-  subagents, and the tool is not offered beyond the limit).
-- **Same containers, same model**: a subagent's researcher runs in the
-  researcher container and its advisor in the advisor container, as a separate
-  conversation in the same agent process. There is no isolation between a
-  subagent and its parent's environment (same `/sandbox`, installed tools,
-  model), but researcher/advisor isolation is unchanged.
-- **Own folder, protected goals**: subagent `S<n>` works in
-  `/sandbox/agents/S<n>/` and keeps its own `GOALS.md` there. When it starts, the
-  harness snapshots every other existing `GOALS.md` (main and other agents');
-  when it calls `request_task_completion`, changed files are restored from the
-  snapshot and the request is refused with an explanation.
-- **Report**: before completion the subagent must write
-  `/sandbox/agents/S<n>/REPORT.md` (completion is refused while it is missing or
-  empty). The report is inlined into the parent's next prompt.
-
-Subagents learn all of this from their system prompt. On disk:
-
-```
-runs/<id>/
-  agents/S<n>/                 # harness records (outside the sandbox)
-    agent.json                 # id, parent, depth, title, instructions, status
-    instructions.md            # the approved brief (+ conditions)
-    goals-snapshot.json        # protected GOALS.md contents at start
-    REPORT.md                  # copy of the final report
-  transcripts/agents/S<n>/{researcher,advisor}.jsonl
-  researcher-sandbox/agents/S<n>/{GOALS.md,REPORT.md,...}
-```
-
-`session.jsonl` records `subagent_start`/`subagent_done`, and every transcript
-entry carries the `agentId` it belongs to. `--resume` rebuilds the agent tree
-from the log: if a subagent was active, it continues (with a fresh context);
-other agents get a note that their context was reset the next time they are
-prompted. `stats.json` includes subagent tokens/turns (per role and per agent).
-
-This is deliberately simple: goal and report files are plain Markdown in the
-shared sandbox, guarded only by the snapshot check.
+`--max-subagent-depth N` (minimum 1, default unlimited) limits nesting: at the
+maximum depth goals must be delegated in full.
 
 ## Human-in-the-loop
 
-The advisor cannot end the session. When the advisor accepts task completion the
-session enters `AWAITING_HUMAN`; the WebUI shows an approval panel:
+Only the human ends the run. When the main researcher finishes (or aborts), the
+run enters `AWAITING_HUMAN` and the WebUI shows an approval panel with the
+summary (or the reason for aborting):
 
-- **Approve completion** → `DONE`
-- **Extend budget** → resume with more budget
-- **Reject / keep working** → send the agents back to work
+- **Approve** → `DONE` (or `ABORTED` for an abort request)
+- **Extend budget** / **Reject** → the main researcher reflects again, with your note
 
-A human can also inject a steering message to either agent at any time.
+A human can also send a message to either agent of any session at any time; a
+message for an agent that is not acting is held and merged into its next
+handoff.
 
 ## Transcripts & WebUI
 
 Both agents append JSONL transcripts to a host directory mounted outside the
-sandbox (`runs/<id>/transcripts/{researcher,advisor}.jsonl`), and the control
-plane records `session.jsonl`. The WebUI (`http://127.0.0.1:<port>/?token=...`)
+sandbox (`runs/<id>/transcripts/{researcher,advisor}.jsonl`, subagents under
+`transcripts/agents/<id>/`). The control plane's own log,
+`runs/<id>/control/session.jsonl`, is the source of truth for `--resume` and
+`--view`; it is not mounted into any container. The WebUI (`http://127.0.0.1:<port>/?token=...`)
 has four panes:
 
-- **Agents** (far left) — a tree of the main session and its subagents (who
-  started whom), with each one's status (working role, waiting on a child,
-  done). Click an agent to switch the other panes to its transcript, overview,
-  goals and subtask/report; finished agents keep their full history. With
-  **follow** checked, the view switches to whichever agent is working. Human
-  messages go to the selected agent (held until it is working again if it is
-  paused).
+- **Agents** (far left) — the session tree (skills, main, and every subagent,
+  tagged `orch` or `leaf` with its goal), with each one's status (acting role,
+  waiting on a child, done, aborted). Click a session to switch the other panes
+  to its transcript, overview, brief and goals; finished sessions keep their full
+  history. Human messages go to the selected session (held until it is working
+  again if it is paused).
 
-- **Task / Goals** (left) — the task text plus the researcher's `GOALS.md`,
-  rendered from Markdown to HTML with a standard CommonMark parser (vendored
+- **Task / Goals** (left) — the task (main session) or the session's brief,
+  outcome and report (subagents), plus the harness's goal tree with live
+  statuses; the selected session's goals are highlighted and each goal expands
+  to its description, acceptance criteria, verdict, notes and report. Markdown is
+  rendered with a standard CommonMark parser (vendored
   `marked` + `DOMPurify` under `control-plane/ui/vendor/`; regenerate with
   `npm run vendor:ui`).
 - **Transcript** (middle) — the full, chronological transcript. It always shows
@@ -199,11 +137,11 @@ has four panes:
   acceptance criteria, required changes, feedback, ...) render as structured
   fields rather than raw JSON. A toolbar above it searches entries by text and
   filters them by author.
-- **Overview** (right) — one clickable item per high-level phase (plan
-  proposed/approved/changed, result submitted/accepted/changed, task completion,
-  human decisions), grouped into sections: setup, one per goal (titled from its
-  plan, with a live status: planning / in progress / result in review / changes
-  requested / done), and task completion. The pane header counts goals done.
+- **Overview** (right) — one clickable item per protocol step (plan proposed or
+  accepted, subagent proposed/approved/started/finished, result submitted or
+  verified, reflections, completion, human decisions), grouped into sections:
+  setup, one per goal (with its live status from the goal tree), and completion.
+  The pane header counts goals done.
   Clicking an item scrolls the transcript to it and highlights it; the current
   phase is highlighted as you scroll; section headers collapse.
 
@@ -320,27 +258,29 @@ per task (and can even update the bundled Rust/uv/Node.js at runtime).
 |---|---|---|
 | `--task` / `--task-file` | — | the broad research task |
 | `--initial-sandbox` | — | host folder copied into the researcher sandbox before the session |
-| `--researcher-model` / `--advisor-model` | `einfra:qwen3.8-27b` / `einfra:deepseek-v4-flash` | `provider:model::effort` |
+| `--researcher-model` / `--advisor-model` | `einfra:qwen3.8-27b` / `einfra:deepseek-v4-flash` | `provider:model` or `provider:model::effort` (see [Reasoning effort](#reasoning-effort)) |
 | `--config` | `./pi_config.json` | provider definitions |
 | `--image` | `research-loop-agent:latest` | Docker image |
 | `--local` | off | run agents as local processes instead of Docker |
 | `--docker` | off | force Docker even with `--faux` (test the container path offline) |
 | `--faux` | off | offline scripted demo (implies `--local` unless `--docker`) |
 | `--auto-approve` | off | auto-approve final completion (for testing) |
-| `--skip-skills` | off | skip the skills-discovery phase and start planning immediately |
-| `--max-subagent-depth` | unlimited | maximum subagent nesting depth (`0` disables subagents) |
-| `--delegation` | `optional` | `encouraged` = supervisor mode: the main researcher delegates substantial self-contained goals by default |
+| `--skip-skills` | off | skip the skills session and start planning immediately |
+| `--max-subagent-depth` | unlimited | maximum subagent nesting depth (minimum 1; at the maximum, goals are delegated in full) |
+| `--max-plan-changes` | 0 (unlimited) | approved plan changes allowed in the main session |
+| `--max-subagent-rejections` | 0 (unlimited) | rejected delegations per goal before the session ends (main: goes to the human) |
+| `--allow-stale-image` | off | run even if the image's agent code differs from this checkout (otherwise the run stops with a rebuild hint) |
 | `--no-open` | off | do not open the WebUI in a browser (URL is still printed) |
 | `--no-model-discovery` | off | skip querying the provider's `/models` for context/output limits |
 | `--researcher-context-window` / `--advisor-context-window` | discovered/config | override a model's context window |
 | `--researcher-max-tokens` / `--advisor-max-tokens` | discovered/config | override a model's maximum output tokens |
-| `--max-handoffs` | 0 (unlimited) | abort after this many researcher goal steps (proposals + results); set a value to enforce |
+| `--max-handoffs` | 0 (unlimited) | abort after this many accepted handoffs in the whole run |
 | `--wallclock-ms` | 0 | overall wall-clock budget (`0` = disabled) |
 | `--max-turns-per-phase` | 1000 | agent turns allowed per phase (`0` = unlimited) |
 | `--abort-timeout-ms` | 0 | per-attempt window before an in-flight turn is aborted and retried (`0` = disabled) |
 | `--phase-timeout-ms` | 0 | hard per-phase wall clock (`0` = disabled) |
 | `--provider-retry-budget` | `8h` | how long to keep retrying one provider/control-plane outage with exponential backoff (`0` = no retries) |
-| `--thinking` | medium | reasoning effort |
+| `--thinking` | medium | reasoning effort for models whose spec has no `::effort` (see [Reasoning effort](#reasoning-effort)) |
 | `--host` | `127.0.0.1` | control-plane/WebUI bind address (`0.0.0.0` for all interfaces) |
 | `--port` | 0 | control-plane port (0 = random) |
 | `--run-dir` | `runs/<timestamp>` | output directory |
@@ -365,8 +305,168 @@ node orchestrator/run.mjs --task "Reduce this Boolean network while preserving a
 The contents are copied (recursively) into `runs/<id>/researcher-sandbox/`, which
 the researcher sees as `/sandbox` and the advisor sees read-only as
 `/researcher-sandbox`. The initial resource listing is also included in the
-researcher's opening message so it knows what it has. Everything else (installed
-tools, generated files, GOALS.md) is written on top of this seed.
+planning advisor's opening message so it knows what it has. Everything else
+(installed tools, generated files) is written on top of this seed. Skills in the
+seed's `skills/` folder count as pre-installed: they are copied to the
+advisor's sandbox too and listed to the skills session.
+
+## Reasoning effort
+
+**Setting it.** Give each role its own effort in the model spec, e.g.
+`--researcher-model psyche:qwen3.8-flash-next-fp8-iq4r::high`. A spec without
+`::effort` uses `--thinking` (default `medium`) instead. The levels are
+`off`, `minimal`, `low`, `medium`, `high`, `xhigh` and `max`; anything else
+stops the run at startup. The orchestrator prints the effective level per role
+(`researcher reasoning effort: high (model spec)`), and `run.json` keeps the
+specs, so `--resume` uses the same levels.
+
+**What reaches the provider.** The level is handed to pi-ai, which turns it into
+request parameters in three steps:
+
+1. **Only for reasoning models.** A model with `"reasoning": false` never gets a
+   reasoning parameter, whatever the level. Every custom model in
+   `pi_config.json` is marked `"reasoning": true`; catalog models (OpenCode Go)
+   carry their own flag.
+2. **Clamp to a supported level.** A reasoning model supports `off` through
+   `high`, minus any level its `thinkingLevelMap` sets to `null`; `xhigh` and
+   `max` only when the map defines them. An unsupported level becomes the next
+   *higher* supported one, or else the next lower one.
+3. **Map and format.** The clamped level is replaced by the model's
+   `thinkingLevelMap` entry, if any, and written in the provider's style. The
+   style is the model's `compat.thinkingFormat`, detected from the base URL when
+   not configured: OpenRouter URLs use `reasoning: {effort}`, DeepSeek uses
+   `thinking: {type}` + `reasoning_effort`, and other OpenAI-compatible servers
+   use plain `reasoning_effort`. With `off`, no reasoning option is passed at
+   all, so a style only sends something if it has an explicit "off" value.
+
+What the configured models receive (captured from pi-ai's actual request body
+with `node scripts/reasoning-params.mjs`):
+
+| Level | custom OpenAI-compatible (`psyche`, `einfra`) | `openrouter-extra` | `opencode-go:deepseek-v4.1-flash` |
+|---|---|---|---|
+| `off` | *nothing* (the server's default applies; the model may still think) | `reasoning: {effort: "none"}` | `thinking: {type: "disabled"}` |
+| `minimal` | `reasoning_effort: "minimal"` | `reasoning: {effort: "minimal"}` | `reasoning_effort: "low"`, `thinking: {type: "enabled"}` |
+| `low` | `reasoning_effort: "low"` | `reasoning: {effort: "low"}` | `reasoning_effort: "low"`, thinking enabled |
+| `medium` | `reasoning_effort: "medium"` | `reasoning: {effort: "medium"}` | `reasoning_effort: "high"`, thinking enabled |
+| `high` | `reasoning_effort: "high"` | `reasoning: {effort: "high"}` | `reasoning_effort: "high"`, thinking enabled |
+| `xhigh` | `reasoning_effort: "high"` | `reasoning: {effort: "high"}` | `reasoning_effort: "max"`, thinking enabled |
+| `max` | `reasoning_effort: "high"` | `reasoning: {effort: "high"}` | `reasoning_effort: "max"`, thinking enabled |
+
+The OpenCode Go DeepSeek column follows pi-ai's catalog map for the model
+(`minimal` and `medium` unsupported, `max` defined). No thinking-token budget
+is sent in any of these styles, and the output-token cap is unchanged.
+
+### Per-model settings: `thinkingLevelMap` and `compat`
+
+Both go into a model's entry in `pi_config.json`, next to `"id"` and
+`"reasoning"`. They work for custom providers (entries with a `baseUrl`) and for
+models added to a built-in provider with `"like"` (which otherwise inherit the
+cloned catalog model's values). All custom providers talk the OpenAI
+chat-completions API, so these are pi-ai's settings for that API. Check the
+effect of any change with `node scripts/reasoning-params.mjs provider:model`.
+
+Example: a self-hosted DeepSeek that should behave like OpenCode Go's (explicit
+"thinking disabled" for `off`, `medium` sent as `high`, `max` passed through):
+
+```json
+{
+  "id": "deepseek-v4.1-flash",
+  "reasoning": true,
+  "compat": { "thinkingFormat": "deepseek" },
+  "thinkingLevelMap": { "minimal": null, "low": "low", "medium": null, "high": "high", "max": "max" }
+}
+```
+
+#### `thinkingLevelMap`
+
+An object from thinking level (`off`, `minimal`, `low`, `medium`, `high`,
+`xhigh`, `max`) to what is sent for it:
+
+| Entry | Effect |
+|---|---|
+| key missing | the level is supported and sent under its own name (`"medium"`); `xhigh` and `max` are the exception: without a key they are unsupported |
+| `"value"` | supported, and `"value"` is sent instead of the level name (e.g. `{"max": "max"}` stops `max` being capped at `high`) |
+| `null` | unsupported: a requested level moves to the next *higher* supported level, or else the next lower one |
+| `"off": "value"` | sends `"value"` for `off` where the format has a field for it (`openai`: `reasoning_effort`; `openrouter`: `reasoning.effort`, default `"none"`; `string-thinking`: `thinking`, default `"none"`) |
+| `"off": null` | sends no explicit "off" (`deepseek` and `openrouter` otherwise send their default disable value) |
+
+The map is applied after clamping, so a level is first moved to a supported one
+and then translated.
+
+#### `compat`
+
+An object of overrides. pi-ai first detects every setting from the provider id
+and base URL (e.g. `openrouter.ai` → OpenRouter style, `deepseek.com` →
+DeepSeek style, anything else → plain OpenAI style); each field you set replaces
+only that detected value.
+
+**Reasoning fields:**
+
+| Field | Values | Effect |
+|---|---|---|
+| `thinkingFormat` | see below | how the level is written into the request |
+| `supportsReasoningEffort` | boolean (default `true` except for a few providers, e.g. z.ai, Together, NVIDIA) | `false` omits `reasoning_effort` in the formats that add it (`openai`, `deepseek`, `qwen`, `zai`, `together`, `baseten`); with `openai` nothing is sent at all |
+| `chatTemplateKwargs` | object | the `chat_template_kwargs` sent by the `chat-template` format (below) |
+| `chatTemplateArgs` | object | the `chat_template_args` sent by the `baseten` format, same syntax |
+| `thinkingTokenBudgetField` | `"thinking_token_budget"` (vLLM), `"thinking_budget"` (Qwen/DashScope/SGLang), `"thinking_budget_tokens"` (llama.cpp) | additionally sends a reasoning-token cap under that name: 1024 / 2048 / 8192 / 16384 tokens for `minimal` / `low` / `medium` / `high` (and `xhigh`, `max`), reduced to leave room for the answer. Only sent when the model's `maxTokens` is known. `supportsThinkingTokenBudget: true` is an alias for the vLLM name |
+| `requiresReasoningContentOnAssistantMessages` | boolean (detected only for `deepseek.com`) | replays every earlier assistant message with a `reasoning_content` field, as the DeepSeek API requires in tool loops; set it if a DeepSeek-style server complains about `reasoning_content` |
+| `requiresThinkingAsText` | boolean | replays earlier reasoning as `<thinking>`-delimited text instead of reasoning fields |
+
+**`thinkingFormat` values** (`effort` = the clamped level after
+`thinkingLevelMap`; "on" = any level other than `off`):
+
+| Value | Sends |
+|---|---|
+| `openai` (default) | `reasoning_effort: effort` when on; nothing for `off` unless `thinkingLevelMap.off` is a string |
+| `openrouter` | `reasoning: {effort}`; `off` sends `effort: "none"` |
+| `deepseek` | `thinking: {type: "enabled"}` + `reasoning_effort` when on; `thinking: {type: "disabled"}` for `off` |
+| `qwen` | `enable_thinking: true` + `reasoning_effort` when on; `enable_thinking: false` for `off` |
+| `qwen-chat-template` | `chat_template_kwargs: {enable_thinking, preserve_thinking: true}`: on/off only, the level itself is not sent |
+| `chat-template` | `chat_template_kwargs` built from `compat.chatTemplateKwargs` (below); nothing if that is empty |
+| `baseten` | `chat_template_args` built from `compat.chatTemplateArgs` + `reasoning_effort` |
+| `zai` | `thinking: {type: "enabled" \| "disabled"}` (+ `reasoning_effort` if supported) |
+| `together` | `reasoning: {enabled}` + `reasoning_effort` |
+| `string-thinking` | `thinking: effort` as a string; `off` sends `"none"` |
+| `ant-ling` | `reasoning: {effort}`, only for levels whose `thinkingLevelMap` entry is a string |
+
+**`chatTemplateKwargs` / `chatTemplateArgs`** are objects whose values are
+sent as they are, except placeholders `{"$var": ...}`:
+`"thinking.enabled"` (`true`/`false`), `"thinking.effort"` (the mapped level)
+or `"thinking.budget"` (the token budget above). Add `"omitWhenOff": true` to
+leave the key out for `off`. For example:
+
+```json
+"compat": {
+  "thinkingFormat": "chat-template",
+  "chatTemplateKwargs": {
+    "enable_thinking": { "$var": "thinking.enabled" },
+    "reasoning_effort": { "$var": "thinking.effort", "omitWhenOff": true }
+  }
+}
+```
+
+sends `chat_template_kwargs: {enable_thinking: true, reasoning_effort: "high"}`
+for `high`, and `{enable_thinking: false}` for `off`.
+
+**Other `compat` fields** (request-format quirks; the detected values are
+usually right):
+
+| Field | Effect |
+|---|---|
+| `maxTokensField` | `"max_completion_tokens"` or `"max_tokens"` for the output cap |
+| `supportsDeveloperRole` | send the system prompt with the `developer` role instead of `system` |
+| `supportsStore` | whether the `store` field may be sent |
+| `supportsUsageInStreaming` | request token usage in streamed responses (default `true`) |
+| `supportsFinishReason` | whether streams report `finish_reason` (if not, pi-ai infers it) |
+| `requiresToolResultName` | tool results must carry the tool's `name` |
+| `requiresAssistantAfterToolResult` | insert an assistant message between tool results and a following user message |
+| `supportsStrictMode` | send `strict` in tool definitions (default `true`) |
+| `supportsOpenAIGrammarTools` | allow grammar-constrained custom tools |
+| `cacheControlFormat` | `"anthropic"`: add Anthropic-style `cache_control` prompt-caching markers |
+| `supportsLongCacheRetention` | allow 24 h / 1 h prompt-cache retention |
+| `sendSessionAffinityHeaders`, `sessionAffinityFormat` | send session-affinity headers (`openai`, `openai-nosession` or `openrouter` style) |
+| `openRouterRouting`, `vercelGatewayRouting` | provider-routing preferences for those gateways |
+| `zaiToolStream`, `deferredToolsMode` | z.ai tool streaming; Kimi deferred-tool serialization |
 
 ## Model context limits
 
@@ -397,11 +497,12 @@ is compacted, and the request is retried instead of aborting.
 
 ## Skills
 
-Before planning, the session runs a **skills-discovery phase** (`--skip-skills`
-to disable it):
+Before planning, the run starts with a short **skills session** (`--skip-skills`
+to disable it): an ephemeral researcher/advisor pair whose contexts are
+discarded afterwards.
 
 ```
-RESEARCHER_SKILLS → ADVISOR_REVIEW_SKILLS → RESEARCHER_INSTALL_SKILLS → planning
+SKILLS_PROPOSE → SKILLS_REVIEW → SKILLS_INSTALL (harness) → main session
 ```
 
 - The researcher searches [skills.sh](https://skills.sh) (`npx skills find`),
@@ -409,19 +510,15 @@ RESEARCHER_SKILLS → ADVISOR_REVIEW_SKILLS → RESEARCHER_INSTALL_SKILLS → pl
   `propose_skills` (or `noneNeeded` with justification).
 - The advisor approves or requests changes (`approve_skills` /
   `request_skill_changes`).
-- The researcher installs approved skills with the harness **`install_skill`**
-  tool, which wraps the `skills` CLI and places each skill at
-  `/sandbox/skills/<name>/` (SKILL.md + files). `confirm_skills_installed`
-  reports them and is verified against that directory.
-- Installed skills are re-scanned and injected into **every subsequent prompt**
-  as an index; the agent reads the relevant SKILL.md on demand. The advisor reads
-  the same files at `/researcher-sandbox/skills/...`.
-- **Use is enforced**: plans must list `skillsToUse`, results must report
-  `skillsUsed`, and the advisor rejects plans/results that ignore a relevant
-  installed skill.
+- The **harness** installs the approved skills into `/sandbox/skills/<name>/` of
+  **both** agents: each agent process runs the `skills` CLI itself, with no model
+  involved, and reports what was installed (failures are recorded in
+  `runs/<id>/skills.json`; they do not stop the run).
+- Skills are listed in every later system prompt, and each goal names the skills
+  relevant to it; leaf advisors check that they were used.
 
-With `--skip-skills` (or skills you drop in yourself) the agents are still
-instructed to use anything under `/sandbox/skills/`.
+Skills in the initial sandbox's `skills/` folder are treated as pre-installed
+(copied to the advisor's sandbox and shown to the skills session).
 
 The image ships the `skills` CLI and `DISABLE_TELEMETRY=1`. Skill guidance lives
 in `config/researcher/skills/skills-discovery/SKILL.md` and
@@ -429,12 +526,13 @@ in `config/researcher/skills/skills-discovery/SKILL.md` and
 
 ## Advisor review doctrine
 
-The advisor reviews every plan and result and is explicitly expected to be a
-*harsher critic of the high-level solution*, not just a goals-checker. Its system
-prompt carries an always-on **advisor doctrine** (verify / red-team / explore) and a
-mandatory exploratory self-check on every review — including "is there value we can
-add beyond what is explicitly in the task?" — so a short, vague brief does not leave
-the researcher doing the minimum-viable thing.
+Advisors write the main plan, approve every delegation and plan change, check
+orchestrated goals as a whole, and verify every leaf result. They are expected to be
+*harsher critics of the high-level solution*, not just goal-checkers: their system
+prompt carries an always-on **advisor doctrine** (verify / red-team / explore), and a
+leaf advisor judges a result by the intent of the goal's description, with the
+acceptance criteria as a floor (criteria that pass while the feature does not work
+are not a pass).
 
 Feedback is split into **gating** vs **advisory**: `requiredChanges`/`conditions`
 hard-block a goal, while the optional `advisory` field carries fire-and-forget
@@ -516,14 +614,17 @@ agent/
   main.mjs                 # container entrypoint: session loop
   lib/
     agent-runner.mjs       # pi Agent + retries + compaction + handoffs
-    control-tools.mjs      # submit_plan / accept_result / ...
+    control-tools.mjs      # control tools (one per protocol action), by session kind
+    goal-tools.mjs         # read-only list_goals / read_goal
     protocol.mjs           # envelopes, kinds, rendering, validation
     model-providers.mjs    # providers, auth, model resolution
     tools.mjs              # bash / read_file (line ranges) / grep / write_file / edit_file / ...
     grep.mjs               # grep tool backend (ripgrep, with a built-in fallback)
-    prompts.mjs            # role system prompts
+    prompts.mjs            # system prompts by role and session kind
+    skill-tools.mjs        # harness skill installer (skills CLI)
     transcript.mjs         # JSONL transcript writer
-    abort-retry.mjs        # aborted/429 retry (from pi-retrieve)
+    abort-retry.mjs        # aborted/429/provider-error retry (from pi-retrieve)
+    code-hash.mjs          # agent-code fingerprint (stale-image check)
     context-compaction.mjs # length-stop compaction (from pi-retrieve)
     workspace-paths.mjs    # sandbox/config/prefetch/extra-root resolution
     skills.mjs             # skill index loader
@@ -532,8 +633,11 @@ agent/
     client-identity.mjs    # provider-required identification (OpenCode headers)
 control-plane/
   server.mjs               # HTTP + SSE + static UI
-  broker.mjs               # inboxes, routing, session logging
-  state-machine.mjs        # pure turn-taking state machine
+  broker.mjs               # inboxes, control log, run-folder records
+  engine.mjs               # protocol engine: sessions, goals, replay (pure)
+  state-machine.mjs        # declarative session state machines (docs/PROTOCOL.md)
+  goal-store.mjs           # harness-owned goals and plan versions
+  harness-text.mjs         # per-state instructions and child briefs
   ui/index.html            # single-file WebUI
 orchestrator/
   run.mjs                  # launch, budgets, cleanup, summary
@@ -543,6 +647,9 @@ config/{researcher,advisor}/
   TOOLS.md                 # role tooling notes
   skills/                  # optional skill packs (SKILL.md + README.md)
 Dockerfile.agent           # single image for both roles
+docs/PROTOCOL.md           # protocol specification (state machines, goals)
+scripts/protocol-doc.mjs   # regenerate the transition table in docs/PROTOCOL.md
+scripts/reasoning-params.mjs # show the reasoning parameters sent per model and level
 ```
 
 ## Preserved harness features
@@ -588,7 +695,7 @@ pi-ai's `fauxProvider`, with no network access.
 ## Resuming and reviewing runs
 
 Long sessions sometimes die (provider outage, host reboot). New containers start
-fresh, but the sandbox and transcripts on disk persist, so a run can be
+fresh, but the sandbox, goals and control log on disk persist, so a run can be
 continued:
 
 ```bash
@@ -596,15 +703,27 @@ node orchestrator/run.mjs --resume runs/<id> \
   --resume-prompt "Re-examine G3; the reviewer disagreed with the permutation design."
 ```
 
-The control-plane state is rebuilt from `runs/<id>/transcripts/session.jsonl`,
-so the loop resumes in whatever state it was in (plan review, result review,
-awaiting human, ...) and the resume prompt is delivered to the agent expected to
-act. The prompt always warns the agent that its container/environment was rebuilt
-from scratch and it must reconstitute installed tooling, re-read GOALS.md and its
-notes, and *continue* (not restart) the task. The task, models and
-`--skip-skills` of the original run are restored from `run.json` (written at
-startup), `session.json` (written on a clean exit), or, for older runs, the task
-from the session log; flags override them.
+The control plane replays `runs/<id>/control/session.jsonl` into the exact
+sessions, goals and states the run was in (including a subagent that was
+working), and the resume prompt goes to the agent expected to act, inside that
+session. The prompt warns the agent that its container was rebuilt and its
+conversation lost, repeats the current step's instructions, and tells it to
+re-orient (system prompt, `list_goals` / `read_goal`, the sandbox) and
+*continue*. The prompt also repeats the last message that agent was working on
+(e.g. the advisor's required changes), since the conversation holding it is
+gone. Other live sessions get a similar note with their next message.
+
+Every launch setting (models, image, local/Docker, resources, thinking,
+timeouts, limits, host/port, ...) is saved in `run.json` and restored on
+`--resume`/`--view`; flags given again override the saved values. Runs from
+before protocol v2 (no `control/` folder) cannot be resumed or viewed with this
+version.
+
+Agents must run the agent code of the checkout the orchestrator runs from: each
+agent process reports a fingerprint of its code (`agent/` + `package-lock.json`)
+when it registers, and a different one (typically an image built before your
+latest changes) ends the run immediately with a message telling you to rebuild
+the image. `--allow-stale-image` downgrades this to a warning.
 
 To review a finished run without starting containers:
 
@@ -619,15 +738,19 @@ and no agents, until you interrupt it.
 
 Long sessions are protected against the common derail modes:
 
-- **Provider outages are waited out.** Transient failures (5xx, dropped
-  connections, gateway errors, HTTP 429) trim the failed turn to the last
-  consistent point and retry with exponential backoff: 5 s doubling (30 s for
+- **Provider outages are waited out.** Every provider failure except a context
+  overflow (compaction, below) and an abort (5xx, dropped connections, gateway
+  errors, HTTP 429, a busy server's "KV pool exhausted", even errors that look
+  permanent) trims the failed turn to the last consistent point and retries with
+  exponential backoff: 5 s doubling (30 s for
   429, or the provider's `retry-after`), at most 15 min apart, ±20% jitter. Retries
   continue until one outage has lasted `--provider-retry-budget` (default `8h`,
   about 40 attempts; `0` disables), and the budget restarts after any successful
   model turn. pi-ai's own quick retries (`maxRetries`, default 2) run inside each
   attempt. Each wait is noted in the transcript, and the WebUI header shows
-  "provider down · retry in …" for that agent.
+  "provider down · retry in …" for that agent. A genuinely permanent error (an
+  expired API key) is therefore only noticed by the human watching the run, or
+  when the budget runs out; lower `--provider-retry-budget` to fail faster.
 - **Context overflow vs. outage**: a "request too large" rejection (including
   gateway wordings such as OpenCode's "too large for the model's configured
   input limit") is first treated as a context overflow: history is compacted

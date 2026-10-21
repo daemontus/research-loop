@@ -71,7 +71,7 @@ function setup() {
     humanDecisions: [{ action: "approve", ts: 1900 }],
   };
 
-  const stats = buildRunStats({
+  const opts = {
     sessionId: "s1",
     task: "do a thing",
     runDir,
@@ -83,8 +83,8 @@ function setup() {
     researcherSandbox,
     orchestratorStartedAt: 500,
     orchestratorFinishedAt: 2500,
-  });
-  return { stats, runDir };
+  };
+  return { stats: buildRunStats(opts), runDir, opts };
 }
 
 describe("buildRunStats", () => {
@@ -132,7 +132,7 @@ describe("buildRunStats", () => {
     const { stats } = setup();
     assert.equal(stats.goals.count, 1);
     assert.deepEqual(stats.goals.ids, ["G1"]);
-    assert.equal(stats.goals.researcherSteps, 1);
+    assert.equal(stats.goals.byStatus, null, "no goal tree passed: ids come from handoffs");
     assert.equal(stats.handoffs.total, 3);
     assert.equal(stats.handoffs.byKind.proposal, 1);
     assert.deepEqual(stats.skills, { count: 1, names: ["foo"] });
@@ -143,6 +143,20 @@ describe("buildRunStats", () => {
     );
     assert.equal(stats.humanDecisions.count, 1);
     assert.equal(stats.errors.researcher, "provider failure during researcher phase");
+  });
+
+  it("takes goal statuses from the harness's goal tree when given", () => {
+    const { opts } = setup();
+    const stats = buildRunStats({
+      ...opts,
+      goalTree: [
+        { id: "G1", status: "done" },
+        { id: "G1.1", status: "done" },
+        { id: "G2", status: "aborted" },
+      ],
+    });
+    assert.equal(stats.goals.count, 3);
+    assert.deepEqual(stats.goals.byStatus, { done: 2, aborted: 1 });
   });
 
   it("renders a readable console summary", () => {

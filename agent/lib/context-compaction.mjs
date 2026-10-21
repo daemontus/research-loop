@@ -149,6 +149,52 @@ export function compactMessages(messages) {
   });
 }
 
+export const TOOL_CALLS_PRUNED = "[tool calls removed when the plan was accepted]";
+
+/**
+ * Remove every tool call and tool result except the last call of each tool
+ * named in `keep` (and its result). Reasoning and text stay as the record of
+ * how the conversation got here. An assistant message left without any
+ * content gets a short placeholder so the history stays well-formed.
+ *
+ * @param {any[]} messages
+ * @param {string[]} keep tool names whose last call survives
+ */
+export function pruneToolCalls(messages, keep = []) {
+  const list = Array.isArray(messages) ? messages : [];
+  const keepIds = new Set();
+  for (const name of keep) {
+    for (let i = list.length - 1; i >= 0; i--) {
+      const call = (list[i]?.role === "assistant" ? list[i].content || [] : []).find(
+        (c) => c?.type === "toolCall" && c.name === name,
+      );
+      if (call) {
+        keepIds.add(call.id);
+        break;
+      }
+    }
+  }
+  const out = [];
+  for (const msg of list) {
+    if (msg?.role === "toolResult") {
+      if (keepIds.has(msg.toolCallId)) out.push(msg);
+      continue;
+    }
+    if (msg?.role !== "assistant" || !Array.isArray(msg.content)) {
+      out.push(msg);
+      continue;
+    }
+    const content = msg.content.filter((c) => c?.type !== "toolCall" || keepIds.has(c.id));
+    if (content.length === msg.content.length) {
+      out.push(msg);
+      continue;
+    }
+    const hasVisible = content.some((c) => c?.type === "toolCall" || (c?.type === "text" && c.text));
+    out.push({ ...msg, content: hasVisible ? content : [...content, { type: "text", text: TOOL_CALLS_PRUNED }] });
+  }
+  return out;
+}
+
 /**
  * @param {object} opts
  * @param {number} opts.compactionIndex 1-based compaction count
@@ -169,11 +215,10 @@ export function buildCompactionUserMessage({
     "",
     `The previous session stopped because of an output/context limit (stopReason: ${stopReason}).`,
     "Tool outputs were removed from chat history to free context. Files on disk are",
-    "unchanged — inspect GOALS.md and the workspace before re-running tools.",
+    "unchanged: inspect the workspace (and list_goals / read_goal) before re-running tools.",
     "Reasoning from sessions older than the previous one was also dropped.",
     "",
-    "Continue the research task. Consult the goal snapshot below and the current",
-    "GOALS.md status. Do not restate completed goals; pick up the in-progress goal.",
+    "Continue with your current step; do not restart finished work.",
   ];
   if (sandboxSnapshot && String(sandboxSnapshot).trim()) {
     lines.push("", "Workspace snapshot:", String(sandboxSnapshot).trim());
@@ -190,38 +235,15 @@ export function buildCompactionUserMessage({
 }
 
 /**
- * Summarize the workspace for the compaction prompt: GOALS.md status plus a
- * shallow listing of top-level entries (bounded).
+ * Summarize the workspace for the compaction prompt: a shallow listing of
+ * top-level entries (bounded).
  *
  * @param {string} sandbox
  * @param {typeof import("node:fs")} fs
  * @param {typeof import("node:path")} path
- * @param {string} [goalsPath] explicit GOALS.md path (e.g. the advisor's read-only copy)
  */
-export function buildSandboxSnapshot(sandbox, fs, path, goalsPath = null) {
+export function buildSandboxSnapshot(sandbox, fs, path) {
   const lines = [];
-
-  const resolvedGoalsPath = goalsPath || path.join(sandbox, "GOALS.md");
-  if (fs.existsSync(resolvedGoalsPath)) {
-    try {
-      const raw = fs.readFileSync(resolvedGoalsPath, "utf8");
-      const goalLines = raw.split(/\r?\n/).filter((l) => /^###\s/.test(l));
-      const statuses = {};
-      for (const line of goalLines) {
-        const match = line.match(/\[status:\s*([a-z_]+)\]/i);
-        const status = match ? match[1].toLowerCase() : "unknown";
-        statuses[status] = (statuses[status] || 0) + 1;
-      }
-      const summary = Object.entries(statuses)
-        .map(([k, v]) => `${k}=${v}`)
-        .join(", ");
-      lines.push(`- GOALS.md: present (${goalLines.length} goals${summary ? `; ${summary}` : ""})`);
-    } catch {
-      lines.push("- GOALS.md: present but unreadable");
-    }
-  } else {
-    lines.push("- GOALS.md: missing");
-  }
 
   const entries = [];
   const walk = (dir, base, depth) => {

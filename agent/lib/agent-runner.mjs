@@ -20,6 +20,7 @@ import {
   buildCompactionUserMessage,
   buildSandboxSnapshot,
   compactMessages,
+  pruneToolCalls,
   isCompactionTrigger,
   lastAssistantErrorDetail,
   lastAssistantReasoning,
@@ -109,7 +110,6 @@ export class AgentSession {
     this.systemPrompt = opts.systemPrompt;
     this.tools = opts.tools;
     this.sandbox = opts.sandbox;
-    this.goalsPath = opts.goalsPath || null;
     this.transcript = opts.transcript;
     // Optional live display of in-progress output (see partial-stream.mjs).
     this.partialStreamer = opts.partialStreamer || null;
@@ -518,10 +518,11 @@ export class AgentSession {
   }
 
   /**
-   * The provider/transport failed (5xx, dropped stream such as undici
-   * "terminated", gateway errors). Trim the failed turn and continue from the
-   * last consistent point after an exponential backoff, until the outage
-   * outlasts the retry budget.
+   * The provider failed in any way other than a rate limit, context overflow
+   * or abort (5xx, dropped stream such as undici "terminated", gateway errors,
+   * "KV pool exhausted" while the GPUs are busy, ...). Trim the failed turn and
+   * continue from the last consistent point after an exponential backoff,
+   * until the outage outlasts the retry budget.
    */
   async #maybeRetryProviderError(caughtError = null) {
     const msgs = this.agent?.state?.messages || [];
@@ -534,7 +535,7 @@ export class AgentSession {
       lastAssistantErrorDetail(msgs)?.errorMessage || (caughtError ? String(caughtError) : "unknown");
     const ok = await this.#retryOutage({
       label: "provider-error-retry",
-      what: "transient provider failure",
+      what: "provider failure",
       detail,
       baseMs: this.providerErrorBackoffMs,
       minDelayMs: retryAfterMs(detail),
@@ -594,7 +595,7 @@ export class AgentSession {
     const compactionText = buildCompactionUserMessage({
       compactionIndex: this.compacted,
       stopReason,
-      sandboxSnapshot: buildSandboxSnapshot(this.sandbox, fs, path, this.goalsPath),
+      sandboxSnapshot: buildSandboxSnapshot(this.sandbox, fs, path),
       partialReasoning,
     });
     this.agent = this.makeAgent();
@@ -714,6 +715,22 @@ export class AgentSession {
       error: promptError,
       stopReason: lastAssistantStopReason(this.agent?.state?.messages || []),
     };
+  }
+
+  /**
+   * Apply context operations requested by the control plane before the next
+   * phase (e.g. pruning tool calls once the plan is accepted).
+   * @param {Array<{ op: string, keep?: string[] }>} ops
+   */
+  applyContextOps(ops) {
+    for (const op of ops || []) {
+      if (op?.op !== "prune_tool_calls" || !this.agent) continue;
+      const before = this.agent.state.messages.length;
+      this.agent.state.messages = pruneToolCalls(this.agent.state.messages, op.keep || []);
+      const warning = `context-pruned: tool calls removed (kept: ${(op.keep || []).join(", ") || "none"}); ${before} -> ${this.agent.state.messages.length} messages`;
+      this.agentWarnings.push(warning);
+      this.transcript.write("system", { content: warning });
+    }
   }
 
   hasPendingHandoff() {

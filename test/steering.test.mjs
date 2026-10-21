@@ -9,7 +9,7 @@ import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@ear
 import { Type } from "typebox";
 
 import { AgentSession } from "../agent/lib/agent-runner.mjs";
-import { bindControlTools, researcherControlToolDefs } from "../agent/lib/control-tools.mjs";
+import { bindControlTools, CONTROL_TOOLS_BY_KIND } from "../agent/lib/control-tools.mjs";
 import { makeCredentialStore } from "../agent/lib/model-providers.mjs";
 import { createTranscriptWriter } from "../agent/lib/transcript.mjs";
 
@@ -31,7 +31,7 @@ function makeSession(responses, extraTools = []) {
     model: models.getModel("faux", "m1"),
     models,
     systemPrompt: "You are the researcher.",
-    tools: [...extraTools, ...bindControlTools(researcherControlToolDefs(), controller)],
+    tools: [...extraTools, ...bindControlTools(CONTROL_TOOLS_BY_KIND.leaf.researcher, controller)],
     sandbox: tmp,
     transcript: createTranscriptWriter(path.join(tmp, "researcher.jsonl"), "researcher"),
     controlState,
@@ -44,7 +44,7 @@ function makeSession(responses, extraTools = []) {
 
 const plan = (goalId) =>
   fauxAssistantMessage(
-    [fauxText("plan"), fauxToolCall("submit_plan", { goalId, title: "t", plan: ["a"], acceptanceCriteria: ["b"] })],
+    [fauxText("plan"), fauxToolCall("submit_result", { summary: goalId, report: "r", notes: "n" })],
     { stopReason: "toolUse" },
   );
 
@@ -74,7 +74,7 @@ describe("human-note steering", () => {
     await session.start();
     await session.runPrompt("start");
     const handoff = session.takeHandoff();
-    assert.equal(handoff?.kind, "proposal", "the phase still ends with its own handoff");
+    assert.equal(handoff?.kind, "submit_result", "the phase still ends with its own handoff");
     assert.deepEqual(userTexts(session), ["start", "HUMAN NOTE"]);
     assert.equal(session.pendingSteer.length, 0);
     assert.equal(session.isRunning(), false);
@@ -91,7 +91,7 @@ describe("human-note steering", () => {
     session.wire(session.agent);
     session.agent.state.messages = [];
     await session.runPrompt("second");
-    assert.equal(session.takeHandoff()?.goalId, "G2");
+    assert.equal(session.takeHandoff()?.payload.summary, "G2");
     assert.deepEqual(userTexts(session), ["second", "LATE NOTE"]);
     assert.equal(session.pendingSteer.length, 0);
   });
