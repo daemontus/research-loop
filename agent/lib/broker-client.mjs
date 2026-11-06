@@ -32,12 +32,15 @@ export function createBrokerClient({ brokerUrl, role, token }) {
     },
 
     /**
-     * Long-poll for inbox messages. Returns { cursor, messages }.
+     * Long-poll for inbox messages. Returns { cursor, messages, paused }.
      * @param {number} cursor
      * @param {number} [waitMs]
+     * @param {boolean|null} [knownPaused] the pause state the agent holds; the
+     *   broker answers at once when it differs
      */
-    async poll(cursor, waitMs = 25000) {
-      const url = `${base}/api/inbox?role=${encodeURIComponent(role)}&cursor=${cursor}&wait=${waitMs}`;
+    async poll(cursor, waitMs = 25000, knownPaused = null) {
+      const known = typeof knownPaused === "boolean" ? `&paused=${knownPaused ? 1 : 0}` : "";
+      const url = `${base}/api/inbox?role=${encodeURIComponent(role)}&cursor=${cursor}&wait=${waitMs}${known}`;
       return jsonFetch(url, { method: "GET" });
     },
 

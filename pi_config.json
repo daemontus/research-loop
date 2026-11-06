@@ -6,9 +6,10 @@
       "baseUrl": "https://ai.infra.sybila.fi.muni.cz/api-15000/v1",
       "apiKeyEnv": "PSYCHE_API_KEY",
       "models": [
-        { "id": "qwen3.8-flash-next-fp8-iq4r", "input": ["text", "image"], "reasoning": true },
-        { "id": "bottlecapai/ThinkingCap-Qwen3.8-27B-GGUF", "input": ["text", "image"], "reasoning": true },
-        { "id": "Ornith-1.5-35B-A3B-GGUF", "input": ["text", "image"], "reasoning": true }
+        { "id": "qwen3.8-flash-next-fp8-iq4r", "input": ["text", "image"], "reasoning": true  },
+        { "id": "qwen3.8-27b-fp8", "input": ["text", "image"], "reasoning": true  },
+        { "id": "bottlecapai/ThinkingCap-Qwen3.8-27B-GGUF", "input": ["text", "image"], "reasoning": true  },
+        { "id": "Ornith-1.5-35B-A3B-GGUF", "input": ["text", "image"], "reasoning": true  }
       ]
     },
     {

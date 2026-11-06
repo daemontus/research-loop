@@ -3,7 +3,7 @@
  * whose turn it is), driven by a small set of inputs:
  *
  *   start, handoff (an agent's control tool), skillsInstalled (harness
- *   installer ack), humanDecision, humanMessage
+ *   installer ack), humanDecision, humanMessage, pause, unpause
  *
  * Every input returns `{ ok, error?, wait?, effects }`. Effects describe what
  * the broker must do (deliver an envelope, write run-folder records, end the
@@ -61,6 +61,11 @@ export function createEngine(opts = {}) {
     finishedAt: null,
     terminalReason: null,
     humanDecisions: [],
+    // Paused by the human: agents make no model requests until unpaused.
+    // `pausedMs` is the total paused time of finished pauses.
+    paused: false,
+    pausedAt: null,
+    pausedMs: 0,
   };
   const skills = { approved: [], installed: {}, names: [...cfg.preinstalledSkills] };
   // Per agent-and-role conversation: notes to merge into its next delivery,
@@ -724,9 +729,42 @@ export function createEngine(opts = {}) {
     return { ok: true, deferred: true, deferredUntil: id === activeId ? STATE_ACTOR[s.state] : `${id} resumes`, effects: fx };
   }
 
+  // ---- pause --------------------------------------------------------------
+
+  /**
+   * Pause the whole run: every agent (and subagent session) stops before its
+   * next model request. The protocol itself is unaffected: handoffs, human
+   * decisions and notes are still accepted while paused.
+   */
+  function pause(ts = Date.now()) {
+    fx = [];
+    if (run.status !== "running") return { ok: false, error: `the run is ${run.status}`, effects: fx };
+    if (run.paused) return { ok: false, error: "the run is already paused", effects: fx };
+    run.paused = true;
+    run.pausedAt = ts;
+    fx.push({ type: "paused", paused: true, ts });
+    return { ok: true, effects: fx };
+  }
+
+  function unpause(ts = Date.now()) {
+    fx = [];
+    if (!run.paused) return { ok: false, error: "the run is not paused", effects: fx };
+    endPause(ts);
+    fx.push({ type: "paused", paused: false, ts });
+    return { ok: true, effects: fx };
+  }
+
+  function endPause(ts) {
+    if (!run.paused) return;
+    run.pausedMs += Math.max(0, ts - run.pausedAt);
+    run.paused = false;
+    run.pausedAt = null;
+  }
+
   // ---- run end ------------------------------------------------------------
 
   function finishRun(status, reason, ts) {
+    endPause(ts);
     run.status = status;
     run.finishedAt = ts;
     run.terminalReason = reason;
@@ -815,6 +853,8 @@ export function createEngine(opts = {}) {
       } else if (e.kind === "skills_installed") skillsInstalled(e.from, e.payload || {}, ts);
       else if (e.kind === "human_decision") humanDecision({ action: e.action, text: e.text }, ts);
       else if (e.kind === "human_message") humanMessage(e.to, e.text || "", e.agentId || null);
+      else if (e.kind === "pause") pause(ts);
+      else if (e.kind === "unpause") unpause(ts);
     }
     fx = [];
     return snapshot();
@@ -880,6 +920,9 @@ export function createEngine(opts = {}) {
       finishedAt: run.finishedAt,
       terminalReason: run.terminalReason,
       humanDecisions: [...run.humanDecisions],
+      paused: run.paused,
+      pausedAt: run.pausedAt,
+      pausedMs: run.pausedMs,
       agents: [...sessions.values()].map(snapshotSession),
     };
   }
@@ -933,6 +976,8 @@ export function createEngine(opts = {}) {
     humanDecision,
     humanMessage,
     abortRun,
+    pause,
+    unpause,
     resume,
     replay,
     correction,
@@ -947,6 +992,7 @@ export function createEngine(opts = {}) {
       return s ? STATE_ACTOR[s.state] : null;
     },
     isRunning: () => run.status === "running",
+    isPaused: () => run.paused,
     run: () => ({ ...run }),
     skillNames: () => [...skills.names],
   };

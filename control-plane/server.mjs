@@ -345,7 +345,8 @@ export function startControlPlane(opts) {
         const role = url.searchParams.get("role");
         const cursor = Number(url.searchParams.get("cursor") || 0);
         const wait = Number(url.searchParams.get("wait") || 25000);
-        const result = await broker.poll(role, cursor, wait);
+        const known = url.searchParams.get("paused");
+        const result = await broker.poll(role, cursor, wait, known === null ? null : known === "1");
         sendJson(res, 200, result);
         return;
       }
@@ -374,6 +375,8 @@ export function startControlPlane(opts) {
 
       if (route === "POST /api/event") {
         const body = JSON.parse((await readBody(req)) || "{}");
+        // An agent process reporting how it honours a pause (UI status).
+        if (body.type === "pause_status") broker.agentPauseStatus(body.role, body.payload || {});
         broker.events.emit("agent-event", body);
         sendJson(res, 200, { ok: true });
         return;
@@ -383,6 +386,14 @@ export function startControlPlane(opts) {
         const body = JSON.parse((await readBody(req)) || "{}");
         const result = broker.humanDecision(body);
         sendJson(res, result.ok ? 200 : 409, result);
+        return;
+      }
+
+      // Pause / resume the whole run (UI). While paused, agents make no new
+      // model requests; see README "Pausing a run".
+      if (route === "POST /api/pause" || route === "POST /api/unpause") {
+        const result = route === "POST /api/pause" ? broker.pause() : broker.unpause();
+        sendJson(res, result.ok ? 200 : 409, { ...result, state: broker.snapshot() });
         return;
       }
 

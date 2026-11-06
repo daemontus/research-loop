@@ -30,12 +30,14 @@ import { createPartialStreamer } from "./lib/partial-stream.mjs";
 import { bindControlTools, CONTROL_TOOLS_BY_KIND } from "./lib/control-tools.mjs";
 import { makeGoalTools } from "./lib/goal-tools.mjs";
 import { modelSupportsImages } from "./lib/model-capabilities.mjs";
+import { PauseGate } from "./lib/pause.mjs";
 import { buildModels, parseModelSpec, resolveModel, assertProviderConfigured } from "./lib/model-providers.mjs";
 import { buildSystemPrompt } from "./lib/prompts.mjs";
 import { renderInbound, ROOT_AGENT_ID } from "./lib/protocol.mjs";
 import { scanSkills } from "./lib/skills.mjs";
 import { installSkills } from "./lib/skill-tools.mjs";
 import { genericToolsFor, makeTools } from "./lib/tools.mjs";
+import { withJsonArgRecovery } from "./lib/json-args.mjs";
 import { createTranscriptWriter } from "./lib/transcript.mjs";
 
 function readJobFromStdin() {
@@ -124,6 +126,20 @@ async function main() {
   // Set once the session is over (done/abort/signal); stops all loops.
   let done = false;
 
+  // The run's pause state, mirrored from the control plane's inbox answers and
+  // shared by every conversation (subagent sessions included): while paused no
+  // model request starts and in-flight ones are interrupted (agent-runner.mjs).
+  const pauseGate = new PauseGate();
+  let reportedPause = "";
+  pauseGate.onChange(() => {
+    // Tell the UI once the pause is honoured (nothing left in flight).
+    const status = { paused: pauseGate.paused, inFlight: pauseGate.inFlight() };
+    const key = JSON.stringify(status);
+    if (key === reportedPause || (!status.paused && reportedPause === "")) return;
+    reportedPause = key;
+    broker.event("pause_status", status);
+  });
+
   // How long to ride out an outage (LLM provider or control plane) before
   // giving up; the orchestrator passes --provider-retry-budget.
   const retryBudgetMs = Number.isFinite(job.retryBudgetMs) ? job.retryBudgetMs : 8 * 3600e3;
@@ -209,7 +225,7 @@ async function main() {
       ...genericToolsFor(role, kind, genericTools),
       ...(kind === "skills" ? [] : goalTools),
       ...bindControlTools(controlNames, controller),
-    ];
+    ].map((tool) => withJsonArgRecovery(tool, log));
 
     const session = new AgentSession({
       role,
@@ -226,6 +242,7 @@ async function main() {
       abortTimeoutMs: job.abortTimeoutMs ?? 0,
       phaseTimeoutMs: job.phaseTimeoutMs ?? 0,
       retryBudgetMs,
+      pauseGate,
       // Each session is its own provider-side session; the main one keeps the
       // historical id so resumed runs stay stable.
       clientSessionId: clientSessionId(job.sessionId || "", agentId === ROOT_AGENT_ID ? role : `${role}:${agentId}`),
@@ -397,9 +414,17 @@ async function main() {
 
   const pollLoop = async () => {
     while (!done) {
-      const batch = await controlPlane("poll", () => broker.poll(cursor));
+      const batch = await controlPlane("poll", () => broker.poll(cursor, 25000, pauseGate.paused));
       if (!batch) break; // shutting down
       cursor = batch.cursor ?? cursor;
+      if (typeof batch.paused === "boolean" && batch.paused !== pauseGate.paused) {
+        pauseGate.set(batch.paused);
+        const content = batch.paused
+          ? `run paused by the human: no new model requests until it is resumed (${pauseGate.inFlight()} in flight interrupted)`
+          : "run resumed by the human";
+        transcript.write("system", { content });
+        log(content);
+      }
       for (const envelope of batch.messages || []) {
         if (envelope.role === "control" && envelope.kind === "session_done") {
           transcript.write("system", { content: "session_done received; exiting" });

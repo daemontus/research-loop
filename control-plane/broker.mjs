@@ -6,7 +6,11 @@
  *   (engine.mjs) and executes the effects it returns: deliveries, run-folder
  *   records, the end of the run;
  * - appends every input to the control-plane log (`<run>/control/session.jsonl`),
- *   which `replay` turns back into the same run for --resume and --view.
+ *   which `replay` turns back into the same run for --resume and --view;
+ * - holds the run's pause state: every inbox poll answer carries `paused`, so
+ *   both agent processes (and all their subagent sessions) mirror it, and a
+ *   pause/unpause wakes pending polls at once. Its clock (`activeNow`) stops
+ *   while paused, for budgets such as the orchestrator's --wallclock-ms.
  *
  * Both agent processes serve every session: each envelope carries the
  * `agentId` (session id) it belongs to, so a process keeps one conversation
@@ -18,6 +22,7 @@ import path from "node:path";
 
 import { createEngine, ROOT_ID } from "./engine.mjs";
 import { renderGoalList } from "./goal-store.mjs";
+import { PauseGate } from "../agent/lib/pause.mjs";
 import { validateEnvelope } from "../agent/lib/protocol.mjs";
 
 export const ROLES = ["researcher", "advisor"];
@@ -86,8 +91,14 @@ export function createBroker(opts) {
   let seq = 0;
   let closed = false;
   let rejections = 0;
+  // Pause clock (stops while paused) and what each agent process last reported
+  // about it: { paused, inFlight, ts } per role.
+  const pauseGate = new PauseGate();
+  const agentPause = new Map(ROLES.map((r) => [r, null]));
 
   if (opts.replayEntries?.length) engine.replay(opts.replayEntries);
+  // A run paused when it was interrupted resumes paused.
+  if (engine.isPaused()) pauseGate.set(true, engine.snapshot().pausedAt);
 
   function logSession(kind, payload = {}) {
     // Reserved keys win so a payload field can never change the event type.
@@ -146,20 +157,30 @@ export function createBroker(opts) {
 
   // ---- effects ------------------------------------------------------------
 
-  function enqueue(role, envelope) {
-    const entry = { seq: ++seq, envelope };
-    queues.get(role).push(entry);
-    logSession("deliver", { to: role, agentId: envelope.agentId, deliverKind: envelope.kind, goalId: envelope.goalId ?? null });
+  /** Inbox answer for `cursor`: new messages plus the run's pause state. */
+  function inbox(role, cursor) {
+    const q = queues.get(role);
+    return {
+      cursor: q.length ? Math.max(cursor, q[q.length - 1].seq) : cursor,
+      messages: q.filter((m) => m.seq > cursor).map((m) => m.envelope),
+      paused: engine.isPaused(),
+    };
+  }
+
+  function wake(role) {
     const waiting = waiters.get(role);
     while (waiting.length) {
       const waiter = waiting.shift();
       clearTimeout(waiter.timer);
-      const q = queues.get(role);
-      waiter.resolve({
-        cursor: q.length ? q[q.length - 1].seq : waiter.cursor,
-        messages: q.filter((m) => m.seq > waiter.cursor).map((m) => m.envelope),
-      });
+      waiter.resolve(inbox(role, waiter.cursor));
     }
+  }
+
+  function enqueue(role, envelope) {
+    const entry = { seq: ++seq, envelope };
+    queues.get(role).push(entry);
+    logSession("deliver", { to: role, agentId: envelope.agentId, deliverKind: envelope.kind, goalId: envelope.goalId ?? null });
+    wake(role);
     events.emit("deliver", { role, envelope });
   }
 
@@ -198,10 +219,15 @@ export function createBroker(opts) {
         case "skills":
           write("skills.json", JSON.stringify(e.record, null, 2));
           break;
+        case "paused":
+          pauseGate.set(e.paused, e.ts);
+          for (const role of ROLES) wake(role);
+          break;
         case "awaiting_human":
           logSession("awaiting_human", { request: e.request, agentId: ROOT_ID });
           break;
         case "terminal":
+          pauseGate.set(false);
           logSession("terminal", { status: e.status, reason: e.reason });
           broadcast(e.status === "done" ? "session_done" : "abort", e.reason || e.status);
           closed = true;
@@ -315,6 +341,41 @@ export function createBroker(opts) {
     return { ok: true, deferred: Boolean(r.deferred), deferredUntil: r.deferredUntil };
   }
 
+  /** The human paused the run (UI). */
+  function pause() {
+    if (closed) return { ok: false, error: "session closed" };
+    const r = engine.pause();
+    if (!r.ok) return { ok: false, error: r.error };
+    logSession("pause", { agentId: ROOT_ID });
+    apply(r);
+    return { ok: true, paused: true };
+  }
+
+  /** The human resumed a paused run (UI). */
+  function unpause() {
+    if (closed) return { ok: false, error: "session closed" };
+    const r = engine.unpause();
+    if (!r.ok) return { ok: false, error: r.error };
+    const pausedFor = pauseGate.paused ? Date.now() - pauseGate.pausedSince : 0;
+    logSession("unpause", { agentId: ROOT_ID, pausedForMs: pausedFor });
+    apply(r);
+    return { ok: true, paused: false };
+  }
+
+  /**
+   * An agent process reports how it is honouring the pause: whether it has
+   * seen it, and how many model requests it still has in flight.
+   */
+  function agentPauseStatus(role, status = {}) {
+    if (!ROLES.includes(role)) return;
+    agentPause.set(role, {
+      paused: Boolean(status.paused),
+      inFlight: Math.max(0, Number(status.inFlight) || 0),
+      ts: Date.now(),
+    });
+    events.emit("state", snapshot());
+  }
+
   function abort(reason) {
     if (closed) return;
     // Agents may exit non-zero while being stopped after approval; a finished
@@ -336,18 +397,22 @@ export function createBroker(opts) {
     events.emit("state", snapshot());
   }
 
-  function poll(role, cursor, waitMs = 25000) {
+  /**
+   * Long-poll `role`'s inbox. `knownPaused` is the pause state the agent
+   * currently holds; if it is stale, the poll answers at once.
+   */
+  function poll(role, cursor, waitMs = 25000, knownPaused = null) {
     if (!ROLES.includes(role)) return Promise.reject(new Error(`unknown role: ${role}`));
-    const q = queues.get(role);
-    const pending = q.filter((m) => m.seq > cursor);
-    if (pending.length) return Promise.resolve({ cursor: q[q.length - 1].seq, messages: pending.map((m) => m.envelope) });
+    const now = inbox(role, cursor);
+    if (now.messages.length) return Promise.resolve(now);
+    if (typeof knownPaused === "boolean" && knownPaused !== now.paused) return Promise.resolve(now);
     return new Promise((resolve) => {
       const waiter = { role, cursor, resolve, timer: null };
       waiter.timer = setTimeout(() => {
         const list = waiters.get(role);
         const idx = list.indexOf(waiter);
         if (idx >= 0) list.splice(idx, 1);
-        resolve({ cursor, messages: [], timedOut: true });
+        resolve({ ...inbox(role, cursor), timedOut: true });
       }, Math.max(0, waitMs));
       waiters.get(role).push(waiter);
     });
@@ -358,6 +423,8 @@ export function createBroker(opts) {
       sessionId: opts.sessionId,
       ...engine.snapshot(),
       registered: Object.fromEntries([...registered.entries()].map(([r, v]) => [r, Boolean(v)])),
+      // Each agent process's view of the pause (null until it reports).
+      pauseAgents: Object.fromEntries([...agentPause.entries()]),
       closed,
     };
   }
@@ -370,6 +437,14 @@ export function createBroker(opts) {
     receiveAgentEnvelope,
     humanDecision,
     humanMessage,
+    pause,
+    unpause,
+    agentPauseStatus,
+    isPaused: () => engine.isPaused(),
+    /** A clock that stops while the run is paused (ms). */
+    activeNow: () => pauseGate.activeNow(),
+    /** Run `fn` after `ms` of unpaused time ({ clear }). */
+    pausableTimeout: (fn, ms) => pauseGate.timeout(fn, ms),
     abort,
     complete,
     poll,

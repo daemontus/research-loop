@@ -240,7 +240,9 @@ All limits are off by default and set by orchestrator flags:
 ## Run folder
 
 The control plane's own log, `control/session.jsonl`, is the source of truth:
-`--resume` rebuilds every session and goal from it. It lives outside every
+`--resume` rebuilds every session and goal from it (and whether the run is
+paused: `pause` / `unpause` entries hold every agent's model requests without
+changing any session's state; see the README). It lives outside every
 directory mounted into the agent containers. Human-readable views are written
 next to it:
 

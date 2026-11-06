@@ -713,7 +713,14 @@ async function main() {
     const r = control.broker.resume(args.resumePrompt || "");
     if (!r.ok) throw new Error(`cannot resume: ${r.error}`);
     console.log(`[research-loop] resumed: session ${r.agentId}, ${r.expecting || "nobody"} to act`);
+    if (control.broker.isPaused()) {
+      console.log("[research-loop] the run was paused when it stopped and is still paused; resume it in the UI");
+    }
   }
+  control.broker.events.on("log", (e) => {
+    if (e.kind === "pause") console.log("[research-loop] run paused (no new model requests until resumed)");
+    if (e.kind === "unpause") console.log("[research-loop] run resumed");
+  });
 
   // Ctrl-C / termination should abort the session and let the cleanup path
   // below stop the containers, instead of leaking them.
@@ -878,9 +885,10 @@ async function main() {
     if (evt.type === "fatal") agentFatal[evt.role] = evt.payload?.message || evt.payload;
   });
 
+  // Counted in unpaused time: the budget stands still while the run is paused.
   let wallclock = null;
   if (args.wallclockMs > 0) {
-    wallclock = setTimeout(() => {
+    wallclock = control.broker.pausableTimeout(() => {
       if (!control.broker.isClosed()) {
         control.broker.abort(`wallclock budget exceeded (${args.wallclockMs}ms)`);
       }
@@ -940,7 +948,7 @@ async function main() {
     }
   });
 
-  if (wallclock) clearTimeout(wallclock);
+  if (wallclock) wallclock.clear();
   if (!["DONE", "ABORTED"].includes(control.broker.snapshot().state)) {
     control.broker.abort("orchestrator shutting down");
   }

@@ -72,7 +72,9 @@ export const CONTROL_TOOL_DEFS = {
     label: "Propose Plan",
     description:
       "Submit the ordered list of goals for the task. The researcher reviews it; once accepted, each goal is " +
-      "delegated to a subagent in order. Goals are tracked by the harness (there is no goals file).",
+      "delegated to a subagent in order. Goals are tracked by the harness (there is no goals file). Every " +
+      "successful call is a real submission that ends your turn: never send a test or placeholder plan. If the " +
+      "call is rejected, fix what the error says and resend the full plan.",
     parameters: Type.Object({
       goals: GOALS("The goals, in the order they will be worked on."),
       rationale: text("Why the work is organised this way."),

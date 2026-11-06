@@ -164,6 +164,20 @@
       .state.AWAITING_HUMAN { background: var(--researcher); animation: wobble 1.6s ease-in-out infinite; }
       .state.DONE { background: #5fd38a; text-transform: none; font-size: 14px; }
       .state.ABORTED { background: var(--advisor); color: #fff; }
+      .state.PAUSED { background: #ffb020; }
+      /* Pause: header control and the banner shown while the run is paused. */
+      #pause-btn { padding: 3px 10px; font-size: 12px; }
+      #pause-btn[hidden] { display: none; }
+      #pause-btn.resume { background: #5fd38a; }
+      #pause-banner {
+        display: none; flex: none; align-items: center; gap: 8px 14px; flex-wrap: wrap;
+        padding: 6px 14px; border-bottom: 3px solid var(--ink); font: 700 13px var(--toon); color: var(--ink);
+        background: repeating-linear-gradient(135deg, #ffd479 0 14px, #ffc94d 14px 28px);
+      }
+      #pause-banner.visible { display: flex; }
+      #pause-banner .pause-title { font-weight: 900; }
+      #pause-banner .pause-agents { font-weight: 700; color: #4a3b00; }
+      #pause-banner button { margin-left: auto; }
       @keyframes wobble { 0%, 100% { transform: rotate(-3deg); } 50% { transform: rotate(3deg); } }
       /* Side panes shrink to their min-width before the page would overflow. */
       main { flex: 1; display: flex; min-height: 0; overflow: hidden; }
@@ -504,11 +518,18 @@
       <span class="stat agent-live" title="Mat, the advisor"><i class="hat mat"></i><i class="dot" id="dot-advisor"></i>Mat <b id="live-advisor" class="live">offline</b></span>
       </div></div>
       <span class="header-tools">
+        <button id="pause-btn" type="button" hidden onclick="togglePause()">⏸ Pause</button>
         <button id="notify-btn" class="icon-btn" type="button" hidden aria-pressed="false">
           <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M12 22a2.5 2.5 0 0 0 2.45-2h-4.9A2.5 2.5 0 0 0 12 22Zm7-6V11a7 7 0 0 0-5.5-6.84V3.5a1.5 1.5 0 0 0-3 0v.66A7 7 0 0 0 5 11v5l-2 2v1h18v-1l-2-2Z"/></svg>
         </button>
       </span>
     </header>
+    <div id="pause-banner" role="status">
+      <span class="pause-title">⏸ Paused</span>
+      <span id="pause-detail"></span>
+      <span id="pause-agents" class="pause-agents"></span>
+      <button class="primary" type="button" onclick="togglePause()">▶ Resume</button>
+    </div>
     <main>
       <aside id="agents-pane" class="pane">
         <div class="side-head"><span class="side-title">Agents</span><button class="collapse-btn" type="button"></button></div>
@@ -787,6 +808,14 @@
             el.className = "live";
             el.textContent = "finished";
             dot.className = "dot";
+            continue;
+          }
+          if (state?.paused) {
+            const p = state.pauseAgents?.[role];
+            el.className = "live idle";
+            el.textContent = p?.paused && p.inFlight ? "pausing…" : "paused";
+            el.title = "the run is paused: no new model requests";
+            dot.className = "dot idle";
             continue;
           }
           const wait = outageWait[role];
@@ -1440,6 +1469,9 @@
           const r = entry.request || {};
           const text = r.type === "abort" ? `Abort requested: ${r.reason || ""}` : r.summary || "Completion requested.";
           div.innerHTML = metaHtml("control", entry, "<span>awaiting the human</span>") + bubble(`<div class="md">${renderMarkdown(text)}</div>`);
+        } else if (entry.kind === "pause" || entry.kind === "unpause") {
+          const label = entry.kind === "pause" ? "paused the run" : `resumed the run${entry.pausedForMs ? ` (paused ${fmtDuration(entry.pausedForMs)})` : ""}`;
+          div.innerHTML = metaHtml("human", entry, `<span>${esc(label)}</span>`) + bubble("");
         } else if (entry.kind === "skills_installed") {
           const inst = entry.payload?.installed || [];
           const errs = entry.payload?.errors || [];
@@ -1657,6 +1689,7 @@
         const a = state ? ATTENTION[state.state] : null;
         const name = runLabel || "Pat & Mat";
         if (a) document.title = `${a.mark} ${a.title} · ${name}`;
+        else if (state?.paused) document.title = `⏸ Paused · ${name}`;
         else document.title = state?.currentGoalId ? `${name} · ${state.currentGoalId}` : name;
       }
       function setRunLabel(label) {
@@ -1702,9 +1735,11 @@
       function updateState(state) {
         currentState = state;
         updateAttention(state);
-        document.getElementById("state").textContent = STATE_LABELS[state.state] || state.state || "?";
-        document.getElementById("state").title = state.state || "";
-        document.getElementById("state").className = "badge state " + (state.state || "");
+        const pausedBadge = state.paused && !state.closed;
+        document.getElementById("state").textContent = pausedBadge ? "paused" : STATE_LABELS[state.state] || state.state || "?";
+        document.getElementById("state").title = pausedBadge ? `paused (protocol state ${state.state})` : state.state || "";
+        document.getElementById("state").className = "badge state " + (pausedBadge ? "PAUSED" : state.state || "");
+        renderPause(state);
         document.getElementById("goal").textContent = state.currentGoalId || "-";
         document.getElementById("handoffs").textContent = state.handoffs ?? 0;
         // When an agent comes online, seed its liveness so the badge is not
@@ -1972,6 +2007,49 @@
       es.onerror = () => {
         // EventSource auto-reconnects; the server replays full history on each connect.
       };
+
+      // --- pause --------------------------------------------------------------
+      // The pause lives in the control plane (it survives a reload and is in the
+      // control log); this only renders it and asks for changes.
+      function renderPause(state) {
+        const live = !state.closed && state.state !== "DONE" && state.state !== "ABORTED" && Boolean(state.startedAt);
+        const paused = live && Boolean(state.paused);
+        const btn = document.getElementById("pause-btn");
+        btn.hidden = !live;
+        btn.textContent = paused ? "▶ Resume" : "⏸ Pause";
+        btn.classList.toggle("resume", paused);
+        btn.title = paused
+          ? "Resume the run: agents continue where they stopped"
+          : "Pause the run: agents stop before their next model request (in-flight requests are interrupted and repeated after resume)";
+        document.getElementById("pause-banner").classList.toggle("visible", paused);
+        if (!paused) return;
+        document.getElementById("pause-detail").textContent =
+          `since ${new Date(state.pausedAt).toLocaleTimeString()} · no new model requests; timeouts and retry budgets are on hold`;
+        const parts = [];
+        let ready = true;
+        for (const role of ["researcher", "advisor"]) {
+          const p = state.pauseAgents?.[role];
+          const name = whoName(role);
+          if (!state.registered?.[role]) parts.push(`${name}: offline`);
+          else if (!p?.paused) {
+            ready = false;
+            parts.push(`${name}: noticing…`);
+          } else if (p.inFlight > 0) {
+            ready = false;
+            parts.push(`${name}: stopping ${p.inFlight} request${p.inFlight === 1 ? "" : "s"}…`);
+          } else parts.push(`${name}: paused`);
+        }
+        document.getElementById("pause-agents").textContent =
+          parts.join(" · ") + (ready ? " — safe to restart the provider" : "");
+      }
+
+      async function togglePause() {
+        const resume = Boolean(currentState?.paused);
+        const r = await fetch(`/api/${resume ? "unpause" : "pause"}?token=` + encodeURIComponent(TOKEN), { method: "POST" });
+        const body = await r.json().catch(() => ({}));
+        if (body.state) updateState(body.state);
+        if (!r.ok) alert(body.error || `could not ${resume ? "resume" : "pause"} the run`);
+      }
 
       async function humanDecision(action) {
         const note = document.getElementById("approval-note").value;

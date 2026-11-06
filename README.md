@@ -105,6 +105,50 @@ A human can also send a message to either agent of any session at any time; a
 message for an agent that is not acting is held and merged into its next
 handoff.
 
+## Pausing a run
+
+The **⏸ Pause** button in the WebUI header pauses the whole run, so you can for
+example restart a self-hosted inference server without restarting the
+orchestrator or the agent containers. **▶ Resume** (in the header or the yellow
+banner) continues exactly where the run stopped.
+
+- **What stops**: model requests. Every agent session in both agent processes
+  (main and subagents at any depth) waits before its next model request. A
+  request that is *in flight* when you pause is interrupted, its unfinished turn
+  is dropped, and the same turn is requested again after resume. This does not
+  count as an abort or provider-error retry. Tool calls that are already running
+  (a long `bash` command, say) are not interrupted; they finish, and their
+  results are kept.
+- **What keeps going**: the protocol. A handoff an agent already made is still
+  delivered, and human decisions and notes still work. Nothing is lost or sent
+  twice: an interrupted turn cannot have called a control tool (tools run only
+  after a complete model response), and a handoff that was already made is
+  sent as usual.
+- **Clocks stand still**: paused time does not count towards
+  `--abort-timeout-ms`, `--phase-timeout-ms`, `--wallclock-ms` or the
+  provider retry budget (`--provider-retry-budget`), and a provider-outage
+  backoff wait is suspended while paused. Restarting the provider while paused
+  therefore costs no retry budget. (Control-plane outage retries in the agents
+  are unaffected; the control plane is not what is paused.)
+- **When is it safe?** The banner shows what each agent process reports: "Pat:
+  stopping 1 request…" until the interrupted request is gone, then "Pat: paused".
+  Once both read "paused", it says *safe to restart the provider*. The header
+  badge reads `paused`, the tab title starts with ⏸, and the agents' transcripts
+  record `paused` / `resumed` notes.
+- **Persistence**: the pause lives in the control plane, not the browser, so it
+  survives a UI reload. `pause` and `unpause` entries (with how long the run was
+  paused) are written to `runs/<id>/control/session.jsonl`, and the WebUI timeline
+  shows them. A run that was paused when it stopped is still paused after
+  `--resume`: its new agents wait before their first model request until you
+  resume it in the UI.
+- **API**: `POST /api/pause` and `POST /api/unpause` (with the session token);
+  `GET /api/state` reports `paused`, `pausedAt`, `pausedMs` (total time of
+  finished pauses) and `pauseAgents` (each agent process's status).
+
+Pausing changes the agent code, so rebuild the Docker image after updating
+(`docker build -f Dockerfile.agent -t <image> .`). Without a rebuild the stale
+image check refuses the agents.
+
 ## Transcripts & WebUI
 
 Both agents append JSONL transcripts to a host directory mounted outside the
@@ -275,11 +319,11 @@ per task (and can even update the bundled Rust/uv/Node.js at runtime).
 | `--researcher-context-window` / `--advisor-context-window` | discovered/config | override a model's context window |
 | `--researcher-max-tokens` / `--advisor-max-tokens` | discovered/config | override a model's maximum output tokens |
 | `--max-handoffs` | 0 (unlimited) | abort after this many accepted handoffs in the whole run |
-| `--wallclock-ms` | 0 | overall wall-clock budget (`0` = disabled) |
+| `--wallclock-ms` | 0 | overall wall-clock budget (`0` = disabled); paused time does not count |
 | `--max-turns-per-phase` | 1000 | agent turns allowed per phase (`0` = unlimited) |
-| `--abort-timeout-ms` | 0 | per-attempt window before an in-flight turn is aborted and retried (`0` = disabled) |
-| `--phase-timeout-ms` | 0 | hard per-phase wall clock (`0` = disabled) |
-| `--provider-retry-budget` | `8h` | how long to keep retrying one provider/control-plane outage with exponential backoff (`0` = no retries) |
+| `--abort-timeout-ms` | 0 | per-attempt window before an in-flight turn is aborted and retried (`0` = disabled); paused time does not count |
+| `--phase-timeout-ms` | 0 | hard per-phase wall clock (`0` = disabled); paused time does not count |
+| `--provider-retry-budget` | `8h` | how long to keep retrying one provider/control-plane outage with exponential backoff (`0` = no retries); paused time does not count for provider outages |
 | `--thinking` | medium | reasoning effort for models whose spec has no `::effort` (see [Reasoning effort](#reasoning-effort)) |
 | `--host` | `127.0.0.1` | control-plane/WebUI bind address (`0.0.0.0` for all interfaces) |
 | `--port` | 0 | control-plane port (0 = random) |
@@ -774,7 +818,8 @@ Long sessions are protected against the common derail modes:
   by progress (`--max-handoffs`) and the cap on consecutive invalid handoffs, so long sessions keep
   going; monitor them live in the WebUI. Set `--abort-timeout-ms` (per-attempt),
   `--phase-timeout-ms` (hard per-phase), or `--wallclock-ms` (overall) to a
-  positive value to re-enable a bound.
+  positive value to re-enable a bound. None of them counts time while the run is
+  paused (see [Pausing a run](#pausing-a-run)).
 - **When enabled**, an in-flight turn that exceeds `--abort-timeout-ms` is
   aborted and retried from the last consistent point with a fresh window; aborts
   are recognised whether the provider reports `stopReason: "aborted"` or an

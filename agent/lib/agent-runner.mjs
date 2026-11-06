@@ -27,6 +27,7 @@ import {
   lastAssistantStopReason,
 } from "./context-compaction.mjs";
 import { hasUnlimitedMaxTokens, stripMaxTokensOnPayload } from "./model-providers.mjs";
+import { PauseGate } from "./pause.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { providerRequestHeaders } from "./client-identity.mjs";
@@ -97,6 +98,8 @@ function lastAssistantText(messages) {
  * @param {string} [opts.thinkingLevel]
  * @param {number} [opts.maxTurnsPerPhase]
  * @param {number} [opts.abortTimeoutMs]
+ * @param {PauseGate} [opts.pauseGate] the run's pause state (shared by every
+ *   session of the process); timers and budgets run on its paused-aware clock
  */
 function newPhaseRetries() {
   return { abort: 0, rateLimit: 0, contextOverflow: 0, providerError: 0, proximity: 0 };
@@ -128,7 +131,15 @@ export class AgentSession {
     this.retryBudgetMs = opts.retryBudgetMs ?? DEFAULT_RETRY_BUDGET_MS;
     this.retryMaxDelayMs = opts.retryMaxDelayMs ?? DEFAULT_RETRY_MAX_DELAY_MS;
     this.random = opts.random ?? Math.random;
-    // The current outage: when it started and how many retries it has had.
+    // While the run is paused no model request starts (see makeAgent), an
+    // in-flight one is interrupted and retried after resume, and the timers
+    // below are measured on this clock, which stands still while paused.
+    this.pauseGate = opts.pauseGate || new PauseGate();
+    // Set when a pause interrupted the in-flight request (recovered without
+    // counting against any retry cap).
+    this.pauseInterrupted = false;
+    // The current outage: when it started (wall time, for display; `activeSince`
+    // on the pause clock, for the budget) and how many retries it has had.
     // Cleared by any successful model turn.
     this.outage = null;
     // Set when history was compacted because of a context-overflow error; if
@@ -192,7 +203,15 @@ export class AgentSession {
         thinkingLevel: this.thinkingLevel,
         tools: this.tools,
       },
-      streamFn: (model, context, options) => {
+      streamFn: async (model, context, options) => {
+        // Safe point for a pause: no model request starts while paused.
+        const gate = session.pauseGate;
+        const outer = options?.signal;
+        if (gate.paused && !outer?.aborted) {
+          session.transcript.write("system", { content: "paused: waiting for the run to be resumed before the next model request" });
+          await gate.waitUntilResumed(outer);
+          if (!outer?.aborted) session.transcript.write("system", { content: "resumed: continuing" });
+        }
         // Inject a provider-level retry policy (pi-ai defaults to maxRetries=0,
         // which makes transient 5xx/408/network errors fatal). Callers can
         // still override per call.
@@ -209,7 +228,31 @@ export class AgentSession {
         if (Object.keys(extraHeaders).length) {
           merged.headers = { ...extraHeaders, ...merged.headers };
         }
-        return session.models.streamSimple(model, context, merged);
+        // Own signal, so a pause can interrupt just this request (tools that
+        // are running are left alone); the agent's own aborts still apply.
+        const ac = new AbortController();
+        const forward = () => ac.abort(outer.reason);
+        if (outer?.aborted) ac.abort(outer.reason);
+        else outer?.addEventListener("abort", forward, { once: true });
+        const release = gate.beginRequest(() => {
+          session.pauseInterrupted = true;
+          ac.abort(new Error("paused"));
+        });
+        const done = () => {
+          release();
+          outer?.removeEventListener("abort", forward);
+        };
+        merged.signal = ac.signal;
+        let stream;
+        try {
+          stream = session.models.streamSimple(model, context, merged);
+        } catch (e) {
+          done();
+          throw e;
+        }
+        if (typeof stream?.result === "function") Promise.resolve(stream.result()).then(done, done);
+        else done();
+        return stream;
       },
       toolExecution: "sequential",
       shouldStopAfterTurn: () => {
@@ -296,18 +339,21 @@ export class AgentSession {
     this.wire(this.agent);
   }
 
+  // Phase budget and per-attempt abort timer run on the pause clock: paused
+  // time does not count.
   #phaseBudgetExceeded() {
     return (
       this.phaseTimeoutMs > 0 &&
       this.phaseStart > 0 &&
-      Date.now() - this.phaseStart > this.phaseTimeoutMs
+      this.pauseGate.activeNow() - this.phaseStart > this.phaseTimeoutMs
     );
   }
 
   #armPhaseTimer() {
     this.#clearPhaseTimer();
     if (!(this.abortTimeoutMs > 0)) return;
-    this.abortTimer = setTimeout(() => {
+    this.abortTimer = this.pauseGate.timeout(() => {
+      this.abortTimer = null;
       try {
         this.agent.abort();
       } catch {
@@ -318,9 +364,36 @@ export class AgentSession {
 
   #clearPhaseTimer() {
     if (this.abortTimer) {
-      clearTimeout(this.abortTimer);
+      this.abortTimer.clear();
       this.abortTimer = null;
     }
+  }
+
+  /**
+   * A pause interrupted the in-flight model request: drop the unfinished turn
+   * and continue from the last consistent point. The continued request waits
+   * in streamFn until the run is resumed. Not counted against any retry cap.
+   */
+  async #maybeRetryAfterPause(caughtError = null) {
+    if (!this.pauseInterrupted) return false;
+    this.pauseInterrupted = false;
+    const msgs = this.agent?.state?.messages || [];
+    if (!shouldRetryAbortedTurn(msgs, caughtError)) return false;
+    try {
+      await this.agent.waitForIdle();
+    } catch {
+      // ignore
+    }
+    const trimmed = trimToLastConsistentMessages(this.agent.state.messages);
+    if (!canContinueFromMessages(trimmed)) {
+      this.agentWarnings.push("pause retry skipped: no consistent continue point");
+      return false;
+    }
+    this.transcript.write("system", {
+      content: `paused: the in-flight model request was interrupted at turn ${this.totalTurns}; it is repeated after resume`,
+    });
+    await this.#continueFromTrimmed(trimmed);
+    return true;
   }
 
   async #maybeRetryAbort(caughtError = null) {
@@ -389,9 +462,11 @@ export class AgentSession {
     }
     if (this.maxTurnsPerPhase > 0 && this.phaseTurns >= this.maxTurnsPerPhase) return false;
     if (!(this.retryBudgetMs > 0)) return false;
-    const now = Date.now();
-    if (!this.outage) this.outage = { since: now, attempts: 0 };
-    const elapsed = now - this.outage.since;
+    // The budget is measured on the pause clock, so a pause (e.g. to restart
+    // the provider) does not spend it.
+    const now = this.pauseGate.activeNow();
+    if (!this.outage) this.outage = { since: Date.now(), activeSince: now, attempts: 0 };
+    const elapsed = now - this.outage.activeSince;
     const left = this.retryBudgetMs - elapsed;
     if (left <= 0) {
       const warning =
@@ -430,7 +505,7 @@ export class AgentSession {
       `; next attempt in ${formatWait(delay)}, ${formatWait(left - delay)} of retry budget left`;
     this.agentWarnings.push(warning);
     this.transcript.write("system", { content: warning, retryAt, outageSince: this.outage.since });
-    if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+    if (delay > 0) await this.pauseGate.sleep(delay);
     await this.#continueFromTrimmed(trimmed);
     return true;
   }
@@ -645,6 +720,12 @@ export class AgentSession {
     // Alternate recovery actions until none applies. Each action continues the
     // agent loop; when it stops again we re-evaluate from the top.
     for (let guard = 0; guard < 100; guard += 1) {
+      if (await this.#maybeRetryAfterPause(error)) {
+        retried = true;
+        error = null;
+        guard -= 1; // pauses are not failures; do not use up the guard
+        continue;
+      }
       if (await this.#maybeRetryAbort(error)) {
         retried = true;
         error = null;
@@ -688,7 +769,8 @@ export class AgentSession {
     this.phaseTurns = 0;
     this.phaseRetries = newPhaseRetries();
     this.controlState.pendingHandoff = null;
-    this.phaseStart = Date.now();
+    this.pauseInterrupted = false;
+    this.phaseStart = this.pauseGate.activeNow();
     this.#maybeCompactProactively();
     this.#armPhaseTimer();
     let promptError = null;
